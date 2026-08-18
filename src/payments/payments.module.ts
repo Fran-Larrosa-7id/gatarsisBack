@@ -14,6 +14,6 @@ import { PaymentsService } from "./payments.service";
     MercadoPagoGateway,
     { provide: MERCADO_PAGO_GATEWAY, useExisting: MercadoPagoGateway },
   ],
-  exports: [PaymentsService],
+  exports: [PaymentsService, MERCADO_PAGO_GATEWAY],
 })
 export class PaymentsModule {}

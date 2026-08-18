@@ -22,6 +22,8 @@ import { AdminAuditLog } from "./entities/admin-audit-log.entity";
 import { AdminRequest } from "./admin-auth.guard";
 import { DomainError } from '../common/domain-error';
 import { AdminOrderListQueryDto, AdminPaymentListQueryDto, AdminPaymentReviewListQueryDto, ResolveReviewDto } from './admin-orders-payments.dto';
+import { toAdminMovement, toAdminOrderItem, toAdminOrderListItem, toAdminPaymentDetail, toAdminPaymentListItem, toAdminPreference } from './admin-orders-payments.responses';
+import { RefundOperation } from '../payments/entities/refund-operation.entity';
 @Controller("admin")
 export class AdminOrdersPaymentsController {
   constructor(private ds: DataSource) {}
@@ -39,7 +41,11 @@ export class AdminOrdersPaymentsController {
       }),
     };
   }
+  private validateDateRange(q: { dateFrom?: string; dateTo?: string }) {
+    if (q.dateFrom && q.dateTo && new Date(q.dateFrom) > new Date(q.dateTo)) throw new DomainError('INVALID_DATE_RANGE', 'dateFrom no puede ser posterior a dateTo.', undefined, 400);
+  }
   @Get("orders") async orders(@Query() q: AdminOrderListQueryDto) {
+    this.validateDateRange(q);
     const { p, s, pagination } = this.page(q);
     const qb = this.ds.getRepository(Order).createQueryBuilder("o");
     if (q.status) qb.andWhere("o.status=:status", { status: q.status });
@@ -54,7 +60,7 @@ export class AdminOrdersPaymentsController {
       .take(s)
       .getManyAndCount();
     return {
-      items: await Promise.all(items.map(async (o) => ({ ...o, itemsCount: Number((await this.ds.getRepository(OrderItem).createQueryBuilder("item").select("COALESCE(SUM(item.quantity), 0)", "total").where("item.order_id = :orderId", { orderId: o.id }).getRawOne<{ total: string }>())!.total) }))),
+      items: await Promise.all(items.map(async (o) => toAdminOrderListItem(o, Number((await this.ds.getRepository(OrderItem).createQueryBuilder("item").select("COALESCE(SUM(item.quantity), 0)", "total").where("item.order_id = :orderId", { orderId: o.id }).getRawOne<{ total: string }>())!.total)))),
       pagination: pagination(total),
     };
   }
@@ -63,20 +69,19 @@ export class AdminOrdersPaymentsController {
       .getRepository(Order)
       .findOne({ where: { id }, relations: { items: true } });
     if (!o) throw new NotFoundException({ code: "ORDER_NOT_FOUND" });
-    return {
-      ...o,
-      paymentPreference: await this.ds
+    const preference = await this.ds
         .getRepository(PaymentPreference)
-        .findOneBy({ orderId: id }),
-      payments: await this.ds.getRepository(Payment).findBy({ orderId: id }),
-      inventoryMovements: await this.ds
+        .findOneBy({ orderId: id });
+    const payments = await this.ds.getRepository(Payment).findBy({ orderId: id });
+    const movements = await this.ds
         .getRepository(InventoryMovement)
         .createQueryBuilder("m")
         .where("m.order_id=:id", { id })
-        .getMany(),
-    };
+        .getMany();
+    return { order: { id: o.id, status: o.status, totalInCents: o.totalInCents, createdAt: o.createdAt, reservationExpiresAt: o.reservationExpiresAt, paidAt: o.paidAt ?? null }, items: o.items.map(toAdminOrderItem), paymentPreference: toAdminPreference(preference), payments: payments.map(toAdminPaymentDetail), inventoryMovements: movements.map(toAdminMovement) };
   }
-  @Get("payments") async payments(@Query() q: AdminPaymentListQueryDto) {
+  @Get("payments") async payments(@Query() q: AdminPaymentListQueryDto & { onlyUnresolvedReviews?: boolean }) {
+    this.validateDateRange(q);
     const { p, s, pagination } = this.page(q);
     const qb = this.ds.getRepository(Payment).createQueryBuilder("p");
     if (q.processingStatus)
@@ -88,17 +93,20 @@ export class AdminOrdersPaymentsController {
       qb.andWhere("p.provider_payment_id=:x", { x: q.providerPaymentId });
     if (q.dateFrom) qb.andWhere("p.created_at >= :from", { from: q.dateFrom });
     if (q.dateTo) qb.andWhere("p.created_at <= :to", { to: q.dateTo });
+    if ((q as AdminPaymentListQueryDto & { onlyUnresolvedReviews?: boolean }).onlyUnresolvedReviews)
+      qb.andWhere("p.review_resolved_at IS NULL");
     const [items, total] = await qb
       .orderBy("p.created_at", "DESC")
       .skip((p - 1) * s)
       .take(s)
       .getManyAndCount();
-    return { items, pagination: pagination(total) };
+    return { items: items.map(toAdminPaymentListItem), pagination: pagination(total) };
   }
   @Get("payments/review") review(@Query() q: AdminPaymentReviewListQueryDto) {
     return this.payments({
       ...q,
       processingStatus: PaymentProcessingStatus.REQUIRES_REVIEW,
+      onlyUnresolvedReviews: true,
     });
   }
   @Get("payments/:id") async payment(
@@ -106,10 +114,9 @@ export class AdminOrdersPaymentsController {
   ) {
     const p = await this.ds.getRepository(Payment).findOneBy({ id });
     if (!p) throw new NotFoundException({ code: "PAYMENT_NOT_FOUND" });
-    return {
-      payment: p,
-      order: await this.ds.getRepository(Order).findOneBy({ id: p.orderId }),
-    };
+    const order = await this.ds.getRepository(Order).findOneBy({ id: p.orderId });
+    const refund = await this.ds.getRepository(RefundOperation).findOne({ where: { paymentId: p.id }, order: { createdAt: 'DESC' } });
+    return { payment: toAdminPaymentDetail(p), order: order ? { id: order.id, status: order.status, totalInCents: order.totalInCents, createdAt: order.createdAt, paidAt: order.paidAt ?? null } : null, refund: refund ? { id: refund.id, paymentId: refund.paymentId, orderId: refund.orderId, amountInCents: refund.amountInCents, status: refund.status, providerRefundId: refund.providerRefundId ?? null, createdAt: refund.createdAt, completedAt: refund.completedAt ?? null } : null };
   }
   @Post("payments/:id/review/resolve") async resolve(
     @Param("id", new ParseUUIDPipe()) id: string,
@@ -150,7 +157,7 @@ export class AdminOrdersPaymentsController {
           resolution: b.resolution,
         },
       });
-      return p;
+      return toAdminPaymentDetail(p);
     });
   }
 }

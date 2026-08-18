@@ -6,15 +6,19 @@ import { OrderItem } from "../orders/entities/order-item.entity";
 import { Payment } from "../payments/entities/payment.entity";
 import { PaymentPreference } from "../payments/entities/payment-preference.entity";
 import { WebhookEvent } from "../payments/entities/webhook-event.entity";
-import { AdminUser } from '../admin/entities/admin-user.entity'; import { AdminSession } from '../admin/entities/admin-session.entity'; import { AdminAuditLog } from '../admin/entities/admin-audit-log.entity';
+import { AdminUser } from "../admin/entities/admin-user.entity";
+import { AdminSession } from "../admin/entities/admin-session.entity";
+import { AdminAuditLog } from "../admin/entities/admin-audit-log.entity";
 import { InitialCommerce1766448000000 } from "../database/migrations/1766448000000-InitialCommerce";
 import { PaymentsMercadoPago1766534400000 } from "../database/migrations/1766534400000-PaymentsMercadoPago";
-import { AdminAuth1766620800000 } from '../database/migrations/1766620800000-AdminAuth';
-import { AdminProducts1766707200000 } from '../database/migrations/1766707200000-AdminProducts';
-import { AdminPaymentReview1766793600000 } from '../database/migrations/1766793600000-AdminPaymentReview';
-import { ProductMedia } from '../products/entities/product-media.entity';
+import { AdminAuth1766620800000 } from "../database/migrations/1766620800000-AdminAuth";
+import { AdminProducts1766707200000 } from "../database/migrations/1766707200000-AdminProducts";
+import { AdminPaymentReview1766793600000 } from "../database/migrations/1766793600000-AdminPaymentReview";
+import { ProductMedia } from "../products/entities/product-media.entity";
 import { Product } from "../products/entities/product.entity";
 import { ProductVariant } from "../products/entities/product-variant.entity";
+import { RefundOperation } from "../payments/entities/refund-operation.entity";
+import { RefundOperations1766880000000 } from "../database/migrations/1766880000000-RefundOperations";
 
 const numberFromEnv = (name: string, fallback: number): number => {
   const value = Number(process.env[name] ?? fallback);
@@ -23,13 +27,15 @@ const numberFromEnv = (name: string, fallback: number): number => {
 };
 
 export const adminAuthConfig = () => {
-  const accessTokenMinutes = numberFromEnv('ADMIN_ACCESS_TOKEN_MINUTES', 15);
-  const refreshTokenHours = numberFromEnv('ADMIN_REFRESH_TOKEN_HOURS', 8);
-  if (accessTokenMinutes <= 0 || refreshTokenHours <= 0) throw new Error('Admin token lifetimes must be positive.');
+  const accessTokenMinutes = numberFromEnv("ADMIN_ACCESS_TOKEN_MINUTES", 15);
+  const refreshTokenHours = numberFromEnv("ADMIN_REFRESH_TOKEN_HOURS", 8);
+  if (accessTokenMinutes <= 0 || refreshTokenHours <= 0)
+    throw new Error("Admin token lifetimes must be positive.");
   const configuredSecret = process.env.ADMIN_JWT_ACCESS_SECRET;
-  if (process.env.NODE_ENV === 'production' && !configuredSecret) throw new Error('ADMIN_JWT_ACCESS_SECRET is required in production.');
+  if (process.env.NODE_ENV === "production" && !configuredSecret)
+    throw new Error("ADMIN_JWT_ACCESS_SECRET is required in production.");
   return {
-    accessSecret: configuredSecret ?? 'development-only-admin-jwt-secret',
+    accessSecret: configuredSecret ?? "development-only-admin-jwt-secret",
     accessTokenMinutes,
     refreshTokenHours,
   };
@@ -52,11 +58,21 @@ export const databaseConfig = (): TypeOrmModuleOptions => ({
     PaymentPreference,
     Payment,
     WebhookEvent,
-    AdminUser, AdminSession, AdminAuditLog,
+    AdminUser,
+    AdminSession,
+    AdminAuditLog,
     ProductMedia,
+    RefundOperation,
   ],
   synchronize: false,
-  migrations: [InitialCommerce1766448000000, PaymentsMercadoPago1766534400000, AdminAuth1766620800000, AdminProducts1766707200000, AdminPaymentReview1766793600000],
+  migrations: [
+    InitialCommerce1766448000000,
+    PaymentsMercadoPago1766534400000,
+    AdminAuth1766620800000,
+    AdminProducts1766707200000,
+    AdminPaymentReview1766793600000,
+    RefundOperations1766880000000,
+  ],
 });
 
 export const reservationMinutes = (): number =>

@@ -22,6 +22,7 @@ export type MercadoPagoPayment = {
   date_last_updated?: string;
 };
 export type MercadoPagoPreference = { id: string; init_point: string };
+export type MercadoPagoRefund = { id: string };
 export interface MercadoPagoGatewayContract {
   createPreference(
     input: Record<string, unknown>,
@@ -33,6 +34,8 @@ export interface MercadoPagoGatewayContract {
   searchPaymentsByExternalReference(
     orderId: string,
   ): Promise<MercadoPagoPayment[]>;
+  refundPayment(paymentId: string): Promise<MercadoPagoRefund>;
+  listRefunds(paymentId: string): Promise<MercadoPagoRefund[]>;
   validateWebhookSignature(input: {
     xSignature?: string | string[];
     xRequestId?: string | string[];
@@ -110,6 +113,17 @@ export class MercadoPagoGateway implements MercadoPagoGatewayContract {
       options: { external_reference: orderId },
     });
     return (response.results ?? []) as MercadoPagoPayment[];
+  }
+  async refundPayment(paymentId: string): Promise<MercadoPagoRefund> {
+    this.ensureEnabled();
+    const response = await (this.payments as unknown as { refund(input: { id: string }): Promise<{ id?: string | number }> }).refund({ id: paymentId });
+    if (response.id == null) throw new Error('Mercado Pago returned an incomplete refund');
+    return { id: String(response.id) };
+  }
+  async listRefunds(paymentId: string): Promise<MercadoPagoRefund[]> {
+    this.ensureEnabled();
+    const payment = await this.payments.get({ id: paymentId }) as unknown as { refunds?: Array<{ id?: string | number }> };
+    return (payment.refunds ?? []).filter((refund) => refund.id != null).map((refund) => ({ id: String(refund.id) }));
   }
   validateWebhookSignature(input: {
     xSignature?: string | string[];

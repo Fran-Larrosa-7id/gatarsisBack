@@ -14,11 +14,13 @@ import { AdminAuditLog } from "../admin/entities/admin-audit-log.entity";
 import { InitialCommerce1766448000000 } from "./migrations/1766448000000-InitialCommerce";
 import { PaymentsMercadoPago1766534400000 } from "./migrations/1766534400000-PaymentsMercadoPago";
 import { AdminAuth1766620800000 } from "./migrations/1766620800000-AdminAuth";
-import { AdminProducts1766707200000 } from './migrations/1766707200000-AdminProducts';
-import { AdminPaymentReview1766793600000 } from './migrations/1766793600000-AdminPaymentReview';
-import { ProductMedia } from '../products/entities/product-media.entity';
+import { AdminProducts1766707200000 } from "./migrations/1766707200000-AdminProducts";
+import { AdminPaymentReview1766793600000 } from "./migrations/1766793600000-AdminPaymentReview";
+import { ProductMedia } from "../products/entities/product-media.entity";
 import { Product } from "../products/entities/product.entity";
 import { ProductVariant } from "../products/entities/product-variant.entity";
+import { RefundOperation } from "../payments/entities/refund-operation.entity";
+import { RefundOperations1766880000000 } from "./migrations/1766880000000-RefundOperations";
 export const AppDataSource = new DataSource({
   type: "postgres",
   host: process.env.DATABASE_HOST ?? "localhost",
@@ -41,6 +43,7 @@ export const AppDataSource = new DataSource({
     AdminSession,
     AdminAuditLog,
     ProductMedia,
+    RefundOperation,
   ],
   migrations: [
     InitialCommerce1766448000000,
@@ -48,5 +51,6 @@ export const AppDataSource = new DataSource({
     AdminAuth1766620800000,
     AdminProducts1766707200000,
     AdminPaymentReview1766793600000,
+    RefundOperations1766880000000,
   ],
 });
