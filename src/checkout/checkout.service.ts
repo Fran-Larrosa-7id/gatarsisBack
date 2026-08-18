@@ -50,7 +50,7 @@ export class CheckoutService {
     }
     await manager.save(OrderItem, orderItems);
     order.subtotalInCents = total; order.totalInCents = total;
-    await manager.save(order);
+    await manager.save(Order, order);
     return this.response({ ...order, items: orderItems as OrderItem[] });
   }
   private normalize(items: ReserveCheckoutDto['items']): NormalizedItem[] {

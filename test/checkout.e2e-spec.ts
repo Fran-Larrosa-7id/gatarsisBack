@@ -1,6 +1,6 @@
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
-import request from 'supertest';
+import request = require('supertest');
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { Inventory } from '../src/inventory/entities/inventory.entity';
