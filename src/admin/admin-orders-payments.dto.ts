@@ -1,0 +1,7 @@
+import { Transform, Type } from 'class-transformer'; import { IsDateString, IsEnum, IsInt, IsOptional, IsString, IsUUID, Max, Min, MinLength } from 'class-validator'; import { OrderStatus } from '../orders/entities/order.entity'; import { PaymentProcessingStatus } from '../payments/entities/payment.entity';
+class Page { @IsOptional() @Type(()=>Number) @IsInt() @Min(1) page?:number; @IsOptional() @Type(()=>Number) @IsInt() @Min(1) @Max(100) pageSize?:number; @IsOptional() @IsDateString() dateFrom?:string; @IsOptional() @IsDateString() dateTo?:string; @IsOptional() @IsString() sort?:string; }
+export class AdminOrderListQueryDto extends Page { @IsOptional() @IsEnum(OrderStatus) status?:OrderStatus; @IsOptional() @IsUUID() orderId?:string; @IsOptional() @IsString() providerPaymentId?:string; }
+export class AdminPaymentListQueryDto extends Page { @IsOptional() @IsString() providerStatus?:string; @IsOptional() @IsEnum(PaymentProcessingStatus) processingStatus?:PaymentProcessingStatus; @IsOptional() @IsUUID() orderId?:string; @IsOptional() @IsString() providerPaymentId?:string; }
+export class AdminPaymentReviewListQueryDto extends Page {}
+export enum ReviewResolution { ACKNOWLEDGED_NO_ACTION='ACKNOWLEDGED_NO_ACTION', MANUAL_INVESTIGATION_COMPLETE='MANUAL_INVESTIGATION_COMPLETE' }
+export class ResolveReviewDto { @IsEnum(ReviewResolution) resolution!:ReviewResolution; @IsString() @MinLength(1) note!:string; }

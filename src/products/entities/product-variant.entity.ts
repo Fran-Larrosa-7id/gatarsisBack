@@ -26,6 +26,8 @@ export class ProductVariant {
   @Column({ type: "varchar", nullable: true }) size!: string | null;
   @Column({ name: "price_in_cents", type: "integer" }) priceInCents!: number;
   @Column({ default: true }) active!: boolean;
+  @Column({ name: 'sort_order', type: 'integer', default: 0 }) sortOrder!: number;
+  @Column({ name: 'low_stock_threshold', type: 'integer', nullable: true }) lowStockThreshold!: number | null;
   @CreateDateColumn({ name: "created_at", type: "timestamptz" })
   createdAt!: Date;
   @UpdateDateColumn({ name: "updated_at", type: "timestamptz" })

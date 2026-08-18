@@ -8,8 +8,15 @@ import { OrderItem } from "../orders/entities/order-item.entity";
 import { Payment } from "../payments/entities/payment.entity";
 import { PaymentPreference } from "../payments/entities/payment-preference.entity";
 import { WebhookEvent } from "../payments/entities/webhook-event.entity";
-import { InitialCommerce1766448000000 } from './migrations/1766448000000-InitialCommerce';
-import { PaymentsMercadoPago1766534400000 } from './migrations/1766534400000-PaymentsMercadoPago';
+import { AdminUser } from "../admin/entities/admin-user.entity";
+import { AdminSession } from "../admin/entities/admin-session.entity";
+import { AdminAuditLog } from "../admin/entities/admin-audit-log.entity";
+import { InitialCommerce1766448000000 } from "./migrations/1766448000000-InitialCommerce";
+import { PaymentsMercadoPago1766534400000 } from "./migrations/1766534400000-PaymentsMercadoPago";
+import { AdminAuth1766620800000 } from "./migrations/1766620800000-AdminAuth";
+import { AdminProducts1766707200000 } from './migrations/1766707200000-AdminProducts';
+import { AdminPaymentReview1766793600000 } from './migrations/1766793600000-AdminPaymentReview';
+import { ProductMedia } from '../products/entities/product-media.entity';
 import { Product } from "../products/entities/product.entity";
 import { ProductVariant } from "../products/entities/product-variant.entity";
 export const AppDataSource = new DataSource({
@@ -30,6 +37,16 @@ export const AppDataSource = new DataSource({
     PaymentPreference,
     Payment,
     WebhookEvent,
+    AdminUser,
+    AdminSession,
+    AdminAuditLog,
+    ProductMedia,
   ],
-  migrations: [InitialCommerce1766448000000, PaymentsMercadoPago1766534400000],
+  migrations: [
+    InitialCommerce1766448000000,
+    PaymentsMercadoPago1766534400000,
+    AdminAuth1766620800000,
+    AdminProducts1766707200000,
+    AdminPaymentReview1766793600000,
+  ],
 });

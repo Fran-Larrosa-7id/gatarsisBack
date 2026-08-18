@@ -44,6 +44,11 @@ export class Payment {
   dateApproved!: Date | null;
   @Column({ name: "date_last_updated", type: "timestamptz", nullable: true })
   dateLastUpdated!: Date | null;
+  @Column({ name: 'review_reason', type: 'varchar', nullable: true }) reviewReason!: string | null;
+  @Column({ name: 'review_resolved_at', type: 'timestamptz', nullable: true }) reviewResolvedAt!: Date | null;
+  @Column({ name: 'review_resolved_by_admin_id', type: 'uuid', nullable: true }) reviewResolvedByAdminId!: string | null;
+  @Column({ name: 'review_resolution', type: 'varchar', nullable: true }) reviewResolution!: string | null;
+  @Column({ name: 'review_note', type: 'varchar', nullable: true }) reviewNote!: string | null;
   @CreateDateColumn({ name: "created_at", type: "timestamptz" })
   createdAt!: Date;
   @UpdateDateColumn({ name: "updated_at", type: "timestamptz" })

@@ -39,6 +39,26 @@ Checklist sandbox: crear/seleccionar aplicación, usar Access Token de prueba, c
 
 Los E2E usan PostgreSQL real y una base aislada `gatarsis_test`. Las migrations están registradas en el DataSource y se aplican al inicializar la suite. Ejecutá `npm run test:e2e`; cubre concurrencia 20×, rollback multi-item, idempotencia y expiración idempotente.
 
+## Administración y autenticación
+
+No existe registro público de administradores. Para crear el primero, configurá en el entorno seguro (no en el repositorio):
+
+```env
+ADMIN_JWT_ACCESS_SECRET=<secreto-largo-y-aleatorio>
+ADMIN_BOOTSTRAP_ENABLED=true
+ADMIN_BOOTSTRAP_EMAIL=admin@tu-dominio.com
+ADMIN_BOOTSTRAP_PASSWORD=<al-menos-14-caracteres>
+```
+
+Ejecutá una sola vez `npm run admin:bootstrap`. El comando aplica migrations, falla si no está habilitado o ya existe un administrador, y sólo guarda el hash bcrypt de la contraseña. Luego cambiá `ADMIN_BOOTSTRAP_ENABLED=false` y remové `ADMIN_BOOTSTRAP_PASSWORD` del entorno.
+
+- `POST /api/v1/admin/auth/login` recibe `{ "email", "password" }` y devuelve access JWT y refresh token opaco.
+- `POST /api/v1/admin/auth/refresh` recibe `{ "refreshToken" }`, rota el refresh e invalida el anterior.
+- `POST /api/v1/admin/auth/logout` usa `Authorization: Bearer <accessToken>` y revoca la sesión server-side.
+- `GET /api/v1/admin/auth/me` usa el mismo header y devuelve el administrador activo.
+
+Todas las rutas bajo `/api/v1/admin/**` quedan protegidas por defecto, salvo login y refresh. El guard verifica JWT, `AdminUser.active` y que la sesión exista, no esté revocada y no haya expirado. Login admite 5 intentos por IP/minuto y refresh 20 por IP/minuto. Helmet está activo y CORS se limita a `CORS_ORIGINS`; los webhooks de Mercado Pago no dependen de CORS.
+
 ## Fuera de esta fase
 
 Panel/admin y auth, cuentas de comprador, carrito persistido, envío, descuentos, Redis, WebSockets y colas. La resolución operativa de `REQUIRES_REVIEW` y refunds queda para Fase 3.

@@ -1,9 +1,12 @@
 import "dotenv/config";
+import helmet from "helmet";
 import { Logger, ValidationPipe } from "@nestjs/common";
 import { NestFactory } from "@nestjs/core";
 import { AppModule } from "./app.module";
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.getHttpAdapter().getInstance().set("trust proxy", 1);
+  app.use(helmet());
   app.setGlobalPrefix("api/v1");
   app.useGlobalPipes(
     new ValidationPipe({

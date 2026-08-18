@@ -18,9 +18,11 @@ export class ProductsService {
       .getRepository(Product)
       .createQueryBuilder("product")
       .leftJoinAndSelect("product.variants", "variant", "variant.active = true")
+      .leftJoinAndSelect("product.media", "media")
       .leftJoinAndSelect("variant.inventory", "inventory")
       .where("product.active = true")
       .orderBy("product.name", "ASC")
       .addOrderBy("variant.sku", "ASC");
+      
   }
 }
