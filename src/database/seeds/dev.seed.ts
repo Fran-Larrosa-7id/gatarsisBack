@@ -14,8 +14,8 @@ async function seed() {
     active: true,
   });
   for (const [sku, name, stock, priceInCents] of [
-    ["SKU-TEST-A", "Variante de prueba A", 10, 1500000],
-    ["SKU-TEST-B", "Variante de prueba B", 1, 1500000],
+    ["SKU-TEST-A", "Variante de prueba A", 10, 150],
+    ["SKU-TEST-B", "Variante de prueba B", 1, 150],
   ] as const) {
     const variant = await variants.save({
       productId: product.id,
