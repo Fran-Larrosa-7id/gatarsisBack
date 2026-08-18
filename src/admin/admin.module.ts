@@ -14,6 +14,7 @@ import { adminAuthConfig } from "../config/database.config";
 import { PaymentsModule } from "../payments/payments.module";
 import { AdminRefundsController } from "./admin-refunds.controller";
 import { AdminRefundsService } from "./admin-refunds.service";
+import { AdminDashboardAuditController } from './admin-dashboard-audit.controller';
 
 const authConfig = adminAuthConfig();
 
@@ -32,6 +33,7 @@ const authConfig = adminAuthConfig();
     AdminInventoryController,
     AdminOrdersPaymentsController,
     AdminRefundsController,
+    AdminDashboardAuditController,
   ],
   providers: [
     AdminAuthService,

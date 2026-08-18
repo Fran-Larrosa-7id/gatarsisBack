@@ -59,6 +59,13 @@ Ejecutá una sola vez `npm run admin:bootstrap`. El comando aplica migrations, f
 
 Todas las rutas bajo `/api/v1/admin/**` quedan protegidas por defecto, salvo login y refresh. El guard verifica JWT, `AdminUser.active` y que la sesión exista, no esté revocada y no haya expirado. Login admite 5 intentos por IP/minuto y refresh 20 por IP/minuto. Helmet está activo y CORS se limita a `CORS_ORIGINS`; los webhooks de Mercado Pago no dependen de CORS.
 
+## Dashboard y auditoría administrativa
+
+- `GET /api/v1/admin/dashboard` devuelve agregados de productos, inventario, órdenes y pagos en revisión. `paidToday` usa el día UTC de `paidAt`; mientras no exista `expiredAt`, `expiredToday` usa el día UTC de `updatedAt` para órdenes `EXPIRED`.
+- `GET /api/v1/admin/audit` es un read model paginado y filtrable por `action`, `adminUserId`, `entityType`, `entityId`, `dateFrom` y `dateTo`. Acepta `page`, `pageSize` (máximo 100) y `sort=createdAt:asc|createdAt:desc`; un rango invertido devuelve `400 INVALID_DATE_RANGE`.
+
+Ambos endpoints son exclusivamente de lectura y no exponen hashes, sesiones ni datos de autenticación.
+
 ## Fuera de esta fase
 
 Panel/admin y auth, cuentas de comprador, carrito persistido, envío, descuentos, Redis, WebSockets y colas. La resolución operativa de `REQUIRES_REVIEW` y refunds queda para Fase 3.

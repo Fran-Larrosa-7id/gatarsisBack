@@ -1,0 +1,3 @@
+import { Type } from 'class-transformer';
+import { IsDateString, IsIn, IsInt, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
+export class AuditQueryDto { @IsOptional() @IsString() action?: string; @IsOptional() @IsUUID() adminUserId?: string; @IsOptional() @IsString() entityType?: string; @IsOptional() @IsString() entityId?: string; @IsOptional() @IsDateString() dateFrom?: string; @IsOptional() @IsDateString() dateTo?: string; @IsOptional() @Type(()=>Number) @IsInt() @Min(1) page?: number; @IsOptional() @Type(()=>Number) @IsInt() @Min(1) @Max(100) pageSize?: number; @IsOptional() @IsIn(['createdAt:asc', 'createdAt:desc']) sort?: string; }
