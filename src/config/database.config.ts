@@ -1,4 +1,3 @@
-import "dotenv/config";
 import { TypeOrmModuleOptions } from "@nestjs/typeorm";
 import { Inventory } from "../inventory/entities/inventory.entity";
 import { InventoryMovement } from "../inventory/entities/inventory-movement.entity";

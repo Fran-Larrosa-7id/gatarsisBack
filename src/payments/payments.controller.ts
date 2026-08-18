@@ -5,6 +5,7 @@ import {
   Headers,
   HttpCode,
   Param,
+  ParseUUIDPipe,
   Post,
   Req,
 } from "@nestjs/common";
@@ -28,7 +29,9 @@ export class PaymentsController {
       query: req.query as Record<string, string | string[] | undefined>,
     });
   }
-  @Get("orders/:orderId/status") status(@Param("orderId") orderId: string) {
+  @Get("orders/:orderId/status") status(
+    @Param("orderId", new ParseUUIDPipe({ version: "4" })) orderId: string,
+  ) {
     return this.payments.status(orderId);
   }
 }

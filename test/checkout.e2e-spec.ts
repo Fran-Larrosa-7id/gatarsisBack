@@ -203,4 +203,12 @@ describe("checkout reservations (PostgreSQL)", () => {
     expect(await dataSource.getRepository(Payment).findOneByOrFail({ providerPaymentId: payment.id })).toMatchObject({ processingStatus: PaymentProcessingStatus.APPLIED });
     expect(await dataSource.getRepository(InventoryMovement).countBy({ orderId: reservation.body.orderId, type: InventoryMovementType.SALE })).toBe(1);
   });
+  it('rejects a non-UUID order status path parameter before PostgreSQL', async () => {
+    const response = await request(app.getHttpServer()).get('/api/v1/orders/2252402486-d5a1db43-2ed9-498e-805f-a66c1726e88b/status').expect(400);
+    expect(response.body.message).toContain('uuid');
+  });
+  it('returns 404 for a well-formed but unknown order UUID', async () => {
+    const response = await request(app.getHttpServer()).get('/api/v1/orders/00000000-0000-4000-8000-000000000000/status').expect(404);
+    expect(response.body.code).toBe('ORDER_NOT_FOUND');
+  });
 });
