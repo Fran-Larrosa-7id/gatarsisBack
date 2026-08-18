@@ -1,30 +1,44 @@
 # Gatarsis Commerce Backend
 
-NestJS + PostgreSQL + TypeORM para catálogo, stock, reservas temporales y órdenes. El backend es la fuente de verdad: una variante nunca puede reservarse o venderse por encima de su stock.
+NestJS + PostgreSQL + TypeORM para catálogo, stock, reservas, órdenes y Checkout Pro de Mercado Pago. PostgreSQL decide cómo un pago confirmado afecta la orden e inventario; el backend nunca confía en redirects del navegador.
 
 ## Desarrollo local
 
-1. Copiá `.env.example` a `.env` y definí credenciales locales.
+1. Copiá `.env.example` a `.env` y definí las credenciales locales.
 2. Iniciá PostgreSQL: `docker compose up -d`.
 3. Instalá dependencias: `npm install`.
 4. Aplicá el schema: `npm run db:migration:run`.
-5. Opcionalmente insertá sólo datos de prueba: `npm run db:seed`.
+5. Opcionalmente cargá sólo datos de prueba: `npm run db:seed`.
 6. Ejecutá: `npm run start:dev`.
 
-La API queda bajo `/api/v1`. Endpoints públicos: `GET /health`, `GET /products`, `GET /products/:slug` y `POST /checkout/reserve`.
+La API está bajo `/api/v1`: catálogo, reserva, preference de Mercado Pago, estado de orden, webhook y health.
 
-## Reserva
+## Stock y reserva
 
-`POST /api/v1/checkout/reserve` exige el header `Idempotency-Key` y un body `{ "items": [{ "variantId": "uuid", "quantity": 1 }] }`. Precios y snapshots se resuelven desde PostgreSQL. La misma clave con el mismo carrito devuelve la orden original; con otro carrito da `409 IDEMPOTENCY_CONFLICT`.
+`POST /checkout/reserve` exige `Idempotency-Key` y recibe `{ "items": [{ "variantId": "uuid", "quantity": 1 }] }`. Precios y snapshots se resuelven desde PostgreSQL. La misma clave con el mismo carrito devuelve la orden original; con otro carrito responde `409 IDEMPOTENCY_CONFLICT`.
 
-El inventario conserva `stockOnHand` y `reservedStock`; `availableStock = stockOnHand - reservedStock` se deriva y nunca se persiste. La reserva ejecuta un `UPDATE ... WHERE stock_on_hand - reserved_stock >= quantity` dentro de una transacción, por lo que 20 compradores simultáneos por la última unidad producen exactamente un ganador.
+El inventario conserva `stockOnHand` y `reservedStock`; `availableStock = stockOnHand - reservedStock` se deriva. La reserva usa un `UPDATE ... WHERE stock_on_hand - reserved_stock >= quantity` atómico dentro de una transacción.
 
-Las órdenes `AWAITING_PAYMENT` expiran según `STOCK_RESERVATION_MINUTES` (15 por defecto). El scheduler libera reservas de forma transaccional e idempotente. `InventoryMovement` registra RESERVE, RELEASE, RESTOCK y ADJUSTMENT.
+## Mercado Pago
+
+Configurá sin commitear secretos: `MP_ENABLED=true`, `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET` y `MP_FRONTEND_BASE_URL` (una URL HTTPS pública). También están disponibles `MP_EXCLUDE_TICKET`, `MP_BINARY_MODE`, `MP_RECONCILIATION_GRACE_SECONDS` y `MP_PENDING_REVIEW_HOURS`.
+
+Después de reservar, solicitá `POST /checkout/:orderId/mercado-pago/preference`. La preference se genera desde los snapshots de `OrderItem`, usa `external_reference=orderId` y vence junto con la reserva. La respuesta devuelve `preferenceId`, `initPoint` y vencimiento, nunca el Access Token.
+
+Configurá en Mercado Pago un webhook HTTPS para **Payments** hacia `POST /api/v1/webhooks/mercado-pago`, y guardá su secret. Se validan `x-signature`, `x-request-id` y `data.id`; el evento entra en un inbox durable deduplicado y se consulta el Payment real antes de cambiar stock.
+
+Un Payment `approved` válido (referencia, ARS e importe exacto) hace una sola venta transaccional: descuenta reservado y stock, registra `SALE`, marca la Order `PAID` y el Payment `APPLIED`. Estados pending conservan la reserva. Los pagos tardíos, duplicados o inconsistentes quedan en `REQUIRES_REVIEW`; no existe auto-refund ni auto-restock.
+
+**Un redirect a `/checkout/success` NO confirma una compra.**
+
+Con Mercado Pago deshabilitado, las reservas expiran de forma directa e idempotente. Con Mercado Pago habilitado, el scheduler reconcilia con el proveedor antes de liberar; ante una caída conserva la reserva para reintentar.
+
+Checklist sandbox: crear/seleccionar aplicación, usar Access Token de prueba, configurar webhook HTTPS de Payments y secret, definir `MP_FRONTEND_BASE_URL` pública y hacer una compra con credenciales/tarjetas de prueba. No usar `localhost` como URL pública.
 
 ## Tests
 
-Los e2e usan PostgreSQL real y requieren una base aislada `gatarsis_test` accesible mediante las mismas variables de entorno, cambiando `DATABASE_NAME`. Ejecutá las migraciones contra esa DB y luego `npm run test:e2e`. Cubren concurrencia 20×, rollback multi-item e idempotencia concurrente. Docker Desktop debe estar iniciado.
+Los E2E usan PostgreSQL real y una base aislada `gatarsis_test`. Las migrations están registradas en el DataSource y se aplican al inicializar la suite. Ejecutá `npm run test:e2e`; cubre concurrencia 20×, rollback multi-item, idempotencia y expiración idempotente.
 
 ## Fuera de esta fase
 
-Mercado Pago, pagos, panel/admin y auth, cuentas de comprador, carrito persistido, envío, descuentos, Redis, WebSockets y colas.
+Panel/admin y auth, cuentas de comprador, carrito persistido, envío, descuentos, Redis, WebSockets y colas. La resolución operativa de `REQUIRES_REVIEW` y refunds queda para Fase 3.

@@ -87,6 +87,36 @@ export class InventoryService {
     });
   }
 
+  async commitSale(
+    manager: EntityManager,
+    variantId: string,
+    quantity: number,
+    orderId: string,
+  ): Promise<void> {
+    const result = await manager
+      .createQueryBuilder()
+      .update(Inventory)
+      .set({
+        stockOnHand: () => `stock_on_hand - ${quantity}`,
+        reservedStock: () => `reserved_stock - ${quantity}`,
+      })
+      .where(
+        "variant_id = :variantId AND stock_on_hand >= :quantity AND reserved_stock >= :quantity",
+        { variantId, quantity },
+      )
+      .execute();
+    if (result.affected !== 1)
+      throw new Error(`Inventory sale invariant violated for ${variantId}`);
+    await manager.save(InventoryMovement, {
+      variantId,
+      orderId,
+      type: InventoryMovementType.SALE,
+      onHandDelta: -quantity,
+      reservedDelta: -quantity,
+      reason: "Mercado Pago approved payment",
+    });
+  }
+
   /**
    *
    * @param variantId

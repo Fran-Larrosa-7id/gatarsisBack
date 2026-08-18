@@ -9,7 +9,10 @@ import {
   InventoryMovementType,
 } from "../src/inventory/entities/inventory-movement.entity";
 import { OrdersService } from "../src/orders/orders.service";
-import { Order } from "../src/orders/entities/order.entity";
+import { Order, OrderStatus } from "../src/orders/entities/order.entity";
+import { Payment, PaymentProcessingStatus } from '../src/payments/entities/payment.entity';
+import { PaymentsService } from '../src/payments/payments.service';
+import { MERCADO_PAGO_GATEWAY } from '../src/payments/mercado-pago.gateway';
 import { ProductVariant } from "../src/products/entities/product-variant.entity";
 import { Product } from "../src/products/entities/product.entity";
 
@@ -17,11 +20,11 @@ describe("checkout reservations (PostgreSQL)", () => {
   let app: INestApplication;
   let dataSource: DataSource;
   let ordersService: OrdersService;
+  let paymentsService: PaymentsService;
   beforeAll(async () => {
     process.env.DATABASE_NAME ??= "gatarsis_test";
-    const module = await Test.createTestingModule({
-      imports: [AppModule],
-    }).compile();
+    process.env.MP_ENABLED = 'true'; process.env.MP_ACCESS_TOKEN = 'test-token'; process.env.MP_WEBHOOK_SECRET = 'test-secret'; process.env.MP_FRONTEND_BASE_URL = 'https://frontend.test';
+    const module = await Test.createTestingModule({ imports: [AppModule] }).overrideProvider(MERCADO_PAGO_GATEWAY).useValue({ createPreference: jest.fn(async () => ({ id: 'pref-1', init_point: 'https://mp.test/pref-1' })), searchPreferencesByExternalReference: jest.fn(async () => []), getPayment: jest.fn(), searchPaymentsByExternalReference: jest.fn(async () => []), validateWebhookSignature: jest.fn() }).compile();
     app = module.createNestApplication();
     app.setGlobalPrefix("api/v1");
     app.useGlobalPipes(
@@ -34,6 +37,7 @@ describe("checkout reservations (PostgreSQL)", () => {
     await app.init();
     dataSource = app.get(DataSource);
     ordersService = app.get(OrdersService);
+    paymentsService = app.get(PaymentsService);
     await dataSource.runMigrations();
   });
   afterAll(async () => {
@@ -188,5 +192,15 @@ describe("checkout reservations (PostgreSQL)", () => {
         .getRepository(InventoryMovement)
         .countBy({ orderId, type: InventoryMovementType.RELEASE }),
     ).toBe(1);
+  });
+  it('applies an approved provider payment exactly once', async () => {
+    const v = await variant(2);
+    const reservation = await request(app.getHttpServer()).post('/api/v1/checkout/reserve').set('Idempotency-Key', 'approved-once').send({ items: [{ variantId: v.id, quantity: 2 }] }).expect(201);
+    const payment = { id: 'payment-approved-once', status: 'approved', transaction_amount: 20, currency_id: 'ARS', external_reference: reservation.body.orderId };
+    await paymentsService.recordAndApply(payment); await paymentsService.recordAndApply(payment);
+    expect(await dataSource.getRepository(Inventory).findOneByOrFail({ variantId: v.id })).toMatchObject({ stockOnHand: 0, reservedStock: 0 });
+    expect(await dataSource.getRepository(Order).findOneByOrFail({ id: reservation.body.orderId })).toMatchObject({ status: OrderStatus.PAID });
+    expect(await dataSource.getRepository(Payment).findOneByOrFail({ providerPaymentId: payment.id })).toMatchObject({ processingStatus: PaymentProcessingStatus.APPLIED });
+    expect(await dataSource.getRepository(InventoryMovement).countBy({ orderId: reservation.body.orderId, type: InventoryMovementType.SALE })).toBe(1);
   });
 });

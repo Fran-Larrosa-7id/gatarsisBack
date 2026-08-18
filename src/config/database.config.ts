@@ -3,6 +3,11 @@ import { Inventory } from "../inventory/entities/inventory.entity";
 import { InventoryMovement } from "../inventory/entities/inventory-movement.entity";
 import { Order } from "../orders/entities/order.entity";
 import { OrderItem } from "../orders/entities/order-item.entity";
+import { Payment } from "../payments/entities/payment.entity";
+import { PaymentPreference } from "../payments/entities/payment-preference.entity";
+import { WebhookEvent } from "../payments/entities/webhook-event.entity";
+import { InitialCommerce1766448000000 } from "../database/migrations/1766448000000-InitialCommerce";
+import { PaymentsMercadoPago1766534400000 } from "../database/migrations/1766534400000-PaymentsMercadoPago";
 import { Product } from "../products/entities/product.entity";
 import { ProductVariant } from "../products/entities/product-variant.entity";
 
@@ -26,9 +31,26 @@ export const databaseConfig = (): TypeOrmModuleOptions => ({
     InventoryMovement,
     Order,
     OrderItem,
+    PaymentPreference,
+    Payment,
+    WebhookEvent,
   ],
   synchronize: false,
+  migrations: [InitialCommerce1766448000000, PaymentsMercadoPago1766534400000],
 });
 
 export const reservationMinutes = (): number =>
   numberFromEnv("STOCK_RESERVATION_MINUTES", 15);
+export const mercadoPagoConfig = () => ({
+  enabled: process.env.MP_ENABLED === "true",
+  accessToken: process.env.MP_ACCESS_TOKEN ?? "",
+  webhookSecret: process.env.MP_WEBHOOK_SECRET ?? "",
+  frontendBaseUrl: process.env.MP_FRONTEND_BASE_URL ?? "",
+  excludeTicket: process.env.MP_EXCLUDE_TICKET !== "false",
+  binaryMode: process.env.MP_BINARY_MODE === "true",
+  reconciliationGraceSeconds: numberFromEnv(
+    "MP_RECONCILIATION_GRACE_SECONDS",
+    120,
+  ),
+  pendingReviewHours: numberFromEnv("MP_PENDING_REVIEW_HOURS", 24),
+});

@@ -2,6 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
 import { DataSource, EntityManager, LessThanOrEqual } from "typeorm";
 import { InventoryService } from "../inventory/inventory.service";
+import { mercadoPagoConfig } from "../config/database.config";
 import { Order, OrderStatus } from "./entities/order.entity";
 import { OrderItem } from "./entities/order-item.entity";
 
@@ -15,19 +16,17 @@ export class OrdersService {
 
   @Cron("0 * * * * *")
   async scheduledExpiration(): Promise<void> {
-    await this.expireReservations();
+    if (!mercadoPagoConfig().enabled) await this.expireReservations();
   }
 
   async expireReservations(now = new Date()): Promise<number> {
-    const candidates = await this.dataSource
-      .getRepository(Order)
-      .find({
-        where: {
-          status: OrderStatus.AWAITING_PAYMENT,
-          reservationExpiresAt: LessThanOrEqual(now),
-        },
-        select: { id: true },
-      });
+    const candidates = await this.dataSource.getRepository(Order).find({
+      where: {
+        status: OrderStatus.AWAITING_PAYMENT,
+        reservationExpiresAt: LessThanOrEqual(now),
+      },
+      select: { id: true },
+    });
     let expired = 0;
     for (const { id } of candidates)
       if (await this.expireOrder(id, now)) expired++;

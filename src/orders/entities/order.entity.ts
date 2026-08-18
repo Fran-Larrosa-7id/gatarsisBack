@@ -29,6 +29,8 @@ export class Order {
   @Column({ name: "total_in_cents", type: "integer" }) totalInCents!: number;
   @Column({ name: "reservation_expires_at", type: "timestamptz" })
   reservationExpiresAt!: Date;
+  @Column({ name: "paid_at", type: "timestamptz", nullable: true })
+  paidAt!: Date | null;
   @CreateDateColumn({ name: "created_at", type: "timestamptz" })
   createdAt!: Date;
   @UpdateDateColumn({ name: "updated_at", type: "timestamptz" })
