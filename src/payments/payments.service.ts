@@ -208,6 +208,12 @@ export class PaymentsService {
     body: Record<string, unknown>;
   }) {
     const dataId = input.query["data.id"];
+    this.logger.log({
+      hasXSignature: Boolean(input.headers["x-signature"]),
+      hasXRequestId: Boolean(input.headers["x-request-id"]),
+      dataId: dataId ?? null,
+      webhookSecretConfigured: Boolean(this.config.webhookSecret),
+    });
     try {
       this.gateway.validateWebhookSignature({
         xSignature: input.headers["x-signature"],

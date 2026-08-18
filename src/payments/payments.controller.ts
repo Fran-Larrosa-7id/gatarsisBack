@@ -6,8 +6,9 @@ import {
   HttpCode,
   Param,
   Post,
-  Query,
+  Req,
 } from "@nestjs/common";
+import { Request } from 'express';
 import { PaymentsService } from "./payments.service";
 @Controller()
 export class PaymentsController {
@@ -19,10 +20,13 @@ export class PaymentsController {
   }
   @Post("webhooks/mercado-pago") @HttpCode(200) webhook(
     @Body() body: Record<string, unknown>,
-    @Headers() headers: Record<string, string | string[] | undefined>,
-    @Query() query: Record<string, string | string[] | undefined>,
+    @Req() req: Request,
   ) {
-    return this.payments.receiveWebhook({ body, headers, query });
+    return this.payments.receiveWebhook({
+      body,
+      headers: req.headers,
+      query: req.query as Record<string, string | string[] | undefined>,
+    });
   }
   @Get("orders/:orderId/status") status(@Param("orderId") orderId: string) {
     return this.payments.status(orderId);
