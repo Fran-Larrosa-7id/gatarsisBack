@@ -8,6 +8,6 @@ export class InventoryMovement {
   @Column({ type: 'enum', enum: InventoryMovementType }) type!: InventoryMovementType;
   @Column({ name: 'on_hand_delta', type: 'integer', default: 0 }) onHandDelta!: number;
   @Column({ name: 'reserved_delta', type: 'integer', default: 0 }) reservedDelta!: number;
-  @Column({ nullable: true }) reason!: string | null;
+  @Column({ type: 'varchar', nullable: true }) reason!: string | null;
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' }) createdAt!: Date;
 }

@@ -7,7 +7,7 @@ export class Order {
   @PrimaryGeneratedColumn('uuid') id!: string;
   @Column({ type: 'enum', enum: OrderStatus }) status!: OrderStatus;
   @Column({ name: 'idempotency_key', unique: true }) idempotencyKey!: string;
-  @Column({ name: 'request_fingerprint', nullable: true }) requestFingerprint!: string | null;
+  @Column({ name: 'request_fingerprint', type: 'varchar', nullable: true }) requestFingerprint!: string | null;
   @Column({ name: 'subtotal_in_cents', type: 'integer' }) subtotalInCents!: number;
   @Column({ name: 'total_in_cents', type: 'integer' }) totalInCents!: number;
   @Column({ name: 'reservation_expires_at', type: 'timestamptz' }) reservationExpiresAt!: Date;

@@ -9,8 +9,8 @@ export class ProductVariant {
   @ManyToOne(() => Product, (product) => product.variants, { onDelete: 'RESTRICT' }) @JoinColumn({ name: 'product_id' }) product!: Product;
   @Column({ unique: true }) sku!: string;
   @Column() name!: string;
-  @Column({ nullable: true }) color!: string | null;
-  @Column({ nullable: true }) size!: string | null;
+  @Column({ type: 'varchar', nullable: true }) color!: string | null;
+  @Column({ type: 'varchar', nullable: true }) size!: string | null;
   @Column({ name: 'price_in_cents', type: 'integer' }) priceInCents!: number;
   @Column({ default: true }) active!: boolean;
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' }) createdAt!: Date;
