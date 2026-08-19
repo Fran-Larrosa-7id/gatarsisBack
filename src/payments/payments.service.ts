@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from "@nestjs/common";
 import { Cron } from "@nestjs/schedule";
-import { DataSource, LessThanOrEqual } from "typeorm";
+import { DataSource, In, LessThanOrEqual } from "typeorm";
 import { DomainError } from "../common/domain-error";
 import { mercadoPagoConfig } from "../config/database.config";
 import { InventoryService } from "../inventory/inventory.service";
@@ -32,6 +32,22 @@ export class PaymentsService {
     @Inject(MERCADO_PAGO_GATEWAY)
     private readonly gateway: MercadoPagoGatewayContract,
   ) {}
+
+  private trace(
+    step: string,
+    context: Record<string, string | number | boolean | null | undefined>,
+  ) {
+    this.logger.log({ step, ...context });
+  }
+
+  private errorCode(error: unknown): string {
+    if (error instanceof DomainError) return error.code;
+    if (typeof error === "object" && error && "code" in error) {
+      const code = (error as { code?: unknown }).code;
+      if (typeof code === "string") return code;
+    }
+    return error instanceof Error ? error.name : "UNKNOWN_ERROR";
+  }
 
   async createPreference(orderId: string) {
     if (!this.config.enabled)
@@ -87,6 +103,7 @@ export class PaymentsService {
           lastErrorCode: null,
           lastErrorAt: null,
           readyAt: null,
+          lastReconciliationAt: null,
         },
       );
       return { order, preference: saved, create: true };
@@ -229,15 +246,23 @@ export class PaymentsService {
       );
     }
     const type = String(input.body.type ?? input.body.topic ?? "");
-    if (type !== "payment" || !dataId) return { received: true };
+    const providerPaymentId = Array.isArray(dataId) ? dataId[0] : dataId;
+    if (type !== "payment" || !providerPaymentId) {
+      this.trace("webhook_ignored", {
+        providerPaymentId: providerPaymentId ?? null,
+        processingResult: "IGNORED_NON_PAYMENT_OR_MISSING_ID",
+      });
+      return { received: true };
+    }
     const eventId = input.body.id ? String(input.body.id) : null;
+    let webhookEventId: string | null = null;
     try {
-      await this.dataSource
+      const inserted = await this.dataSource
         .getRepository(WebhookEvent)
         .insert({
           provider: "mercado_pago",
           providerEventId: eventId,
-          providerResourceId: Array.isArray(dataId) ? dataId[0] : dataId,
+          providerResourceId: providerPaymentId,
           type,
           action: input.body.action ? String(input.body.action) : null,
           requestId: Array.isArray(input.headers["x-request-id"])
@@ -251,10 +276,43 @@ export class PaymentsService {
           receivedAt: new Date(),
           processedAt: null,
         });
+      webhookEventId = String(inserted.identifiers[0]?.id ?? "") || null;
+      this.trace("webhook_inbox_inserted", {
+        providerPaymentId,
+        webhookEventId,
+        processingResult: "PENDING",
+      });
     } catch (error: unknown) {
       if (!String((error as { code?: string }).code).includes("23505"))
         throw error;
+      const existing = eventId
+        ? await this.dataSource.getRepository(WebhookEvent).findOneBy({
+            provider: "mercado_pago",
+            providerEventId: eventId,
+          })
+        : null;
+      if (existing && existing.status !== WebhookEventStatus.PROCESSED) {
+        await this.dataSource.getRepository(WebhookEvent).update(existing.id, {
+          status: WebhookEventStatus.PENDING,
+          attempts: 0,
+          nextAttemptAt: null,
+          lastError: null,
+        });
+        webhookEventId = existing.id;
+        this.trace("webhook_duplicate_requeued", {
+          providerPaymentId,
+          webhookEventId,
+          processingResult: "PENDING",
+        });
+      } else {
+        this.trace("webhook_duplicate_ignored", {
+          providerPaymentId,
+          webhookEventId: existing?.id ?? null,
+          processingResult: "ALREADY_PROCESSED",
+        });
+      }
     }
+    if (webhookEventId) await this.processWebhookEvent(webhookEventId);
     return { received: true };
   }
 
@@ -279,9 +337,26 @@ export class PaymentsService {
     const event = await this.dataSource
       .getRepository(WebhookEvent)
       .findOneBy({ id });
-    if (!event || event.status === WebhookEventStatus.PROCESSED) return;
+    if (!event || event.status === WebhookEventStatus.PROCESSED) {
+      this.trace("webhook_event_skipped", {
+        webhookEventId: id,
+        providerPaymentId: event?.providerResourceId ?? null,
+        processingResult: event ? "ALREADY_PROCESSED" : "NOT_FOUND",
+      });
+      return;
+    }
     try {
+      this.trace("webhook_gateway_get_payment_started", {
+        webhookEventId: id,
+        providerPaymentId: event.providerResourceId,
+      });
       const remote = await this.gateway.getPayment(event.providerResourceId);
+      this.trace("webhook_gateway_get_payment_succeeded", {
+        webhookEventId: id,
+        providerPaymentId: remote.id,
+        orderId: remote.external_reference ?? null,
+        processingResult: remote.status,
+      });
       await this.recordAndApply(remote);
       await this.dataSource
         .getRepository(WebhookEvent)
@@ -290,6 +365,12 @@ export class PaymentsService {
           processedAt: new Date(),
           lastError: null,
         });
+      this.trace("webhook_event_processed", {
+        webhookEventId: id,
+        providerPaymentId: remote.id,
+        orderId: remote.external_reference ?? null,
+        processingResult: "PROCESSED",
+      });
     } catch (error) {
       const attempts = event.attempts + 1;
       await this.dataSource
@@ -309,19 +390,41 @@ export class PaymentsService {
               ? error.message.slice(0, 250)
               : "Unknown error",
         });
+      this.logger.warn({
+        step: "webhook_event_failed",
+        webhookEventId: id,
+        providerPaymentId: event.providerResourceId,
+        processingResult:
+          attempts >= 4 ? WebhookEventStatus.DEAD_LETTER : WebhookEventStatus.RETRY,
+        errorCode: this.errorCode(error),
+      });
     }
   }
 
   async recordAndApply(remote: MercadoPagoPayment) {
     const orderId = remote.external_reference;
-    if (!orderId) return;
+    if (!orderId) {
+      this.trace("payment_ignored_missing_order_reference", {
+        providerPaymentId: remote.id,
+        processingResult: "MISSING_EXTERNAL_REFERENCE",
+      });
+      return;
+    }
+    this.trace("payment_record_started", { providerPaymentId: remote.id, orderId });
     await this.dataSource.transaction(async (manager) => {
       const order = await manager
         .createQueryBuilder(Order, "order")
         .setLock("pessimistic_write")
         .where("order.id = :orderId", { orderId })
         .getOne();
-      if (!order) return;
+      if (!order) {
+        this.trace("payment_ignored_order_not_found", {
+          providerPaymentId: remote.id,
+          orderId,
+          processingResult: "ORDER_NOT_FOUND",
+        });
+        return;
+      }
       let payment = await manager.findOne(Payment, {
         where: { provider: "mercado_pago", providerPaymentId: remote.id },
       });
@@ -364,11 +467,22 @@ export class PaymentsService {
       ) {
         payment.processingStatus = PaymentProcessingStatus.REQUIRES_REVIEW;
         await manager.save(payment);
+        this.trace("payment_requires_review", {
+          providerPaymentId: remote.id,
+          orderId: order.id,
+          processingResult: "REQUIRES_REVIEW",
+        });
         return;
       }
       if (remote.status === "approved") {
-        if (payment.processingStatus === PaymentProcessingStatus.APPLIED)
+        if (payment.processingStatus === PaymentProcessingStatus.APPLIED) {
+          this.trace("payment_already_applied", {
+            providerPaymentId: remote.id,
+            orderId: order.id,
+            processingResult: "APPLIED",
+          });
           return;
+        }
         const items = await manager.findBy(OrderItem, { orderId: order.id });
         for (const item of items.sort((a, b) =>
           a.variantId.localeCompare(b.variantId),
@@ -383,6 +497,11 @@ export class PaymentsService {
         order.paidAt = new Date();
         payment.processingStatus = PaymentProcessingStatus.APPLIED;
         await manager.save([order, payment]);
+        this.trace("payment_sale_applied", {
+          providerPaymentId: remote.id,
+          orderId: order.id,
+          processingResult: "PAID",
+        });
         return;
       }
       if (
@@ -393,15 +512,108 @@ export class PaymentsService {
         order.status = OrderStatus.PAYMENT_PENDING;
         payment.processingStatus = PaymentProcessingStatus.RECORDED;
         await manager.save([order, payment]);
+        this.trace("payment_recorded_pending", {
+          providerPaymentId: remote.id,
+          orderId: order.id,
+          processingResult: "PAYMENT_PENDING",
+        });
         return;
       }
       payment.processingStatus = PaymentProcessingStatus.RECORDED;
       await manager.save(payment);
+      this.trace("payment_recorded_non_terminal", {
+        providerPaymentId: remote.id,
+        orderId: order.id,
+        processingResult: "RECORDED",
+      });
     });
   }
   private date(value?: string) {
     return value ? new Date(value) : null;
   }
+
+  @Cron("30 * * * * *")
+  async earlyReconcilePendingOrders() {
+    if (!this.config.enabled) return;
+    const now = new Date();
+    const cutoff = new Date(
+      now.getTime() - this.config.earlyReconciliationIntervalSeconds * 1000,
+    );
+    const orders = await this.dataSource
+      .getRepository(Order)
+      .createQueryBuilder("order")
+      .innerJoin(
+        PaymentPreference,
+        "preference",
+        "preference.order_id = order.id AND preference.provider = :provider AND preference.status = :preferenceStatus",
+        {
+          provider: "mercado_pago",
+          preferenceStatus: PaymentPreferenceStatus.READY,
+        },
+      )
+      .leftJoin(
+        Payment,
+        "applied_payment",
+        "applied_payment.order_id = order.id AND applied_payment.processing_status = :appliedStatus",
+        { appliedStatus: PaymentProcessingStatus.APPLIED },
+      )
+      .where("order.status IN (:...statuses)", {
+        statuses: [OrderStatus.AWAITING_PAYMENT, OrderStatus.PAYMENT_PENDING],
+      })
+      .andWhere("order.created_at <= :cutoff", { cutoff })
+      .andWhere("order.reservation_expires_at > :now", { now })
+      .andWhere("applied_payment.id IS NULL")
+      .andWhere(
+        "(preference.last_reconciliation_at IS NULL OR preference.last_reconciliation_at <= :cutoff)",
+        { cutoff },
+      )
+      .select("order.id", "id")
+      .orderBy("order.created_at", "ASC")
+      .take(25)
+      .getRawMany<{ id: string }>();
+
+    for (const { id: orderId } of orders) {
+      this.trace("early_reconciliation_started", { orderId });
+      try {
+        const payments = await this.gateway.searchPaymentsByExternalReference(
+          orderId,
+        );
+        const approved = payments.find((payment) => payment.status === "approved");
+        if (approved) await this.recordAndApply(approved);
+        else if (
+          payments.some((payment) =>
+            ["pending", "in_process", "in_mediation", "authorized"].includes(
+              payment.status,
+            ),
+          )
+        )
+          for (const payment of payments) await this.recordAndApply(payment);
+        await this.dataSource.getRepository(PaymentPreference).update(
+          { orderId },
+          { lastReconciliationAt: now },
+        );
+        this.trace("early_reconciliation_finished", {
+          orderId,
+          processingResult: approved
+            ? "APPROVED_FOUND"
+            : payments.length
+              ? "NO_APPROVED_PAYMENT"
+              : "NO_PAYMENT",
+        });
+      } catch (error) {
+        await this.dataSource.getRepository(PaymentPreference).update(
+          { orderId },
+          { lastReconciliationAt: now },
+        );
+        this.logger.warn({
+          step: "early_reconciliation_failed",
+          orderId,
+          errorCode: this.errorCode(error),
+        });
+      }
+    }
+  }
+
   @Cron("45 * * * * *") async reconcileExpiredReservations() {
     if (!this.config.enabled) return;
     const cutoff = new Date(

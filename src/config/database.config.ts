@@ -22,6 +22,7 @@ import { ProductVariant } from "../products/entities/product-variant.entity";
 import { RefundOperation } from "../payments/entities/refund-operation.entity";
 import { RefundOperations1766880000000 } from "../database/migrations/1766880000000-RefundOperations";
 import { VariantMedia1766966400000 } from "../database/migrations/1766966400000-VariantMedia";
+import { EarlyPaymentReconciliation1767052800000 } from "../database/migrations/1767052800000-EarlyPaymentReconciliation";
 
 const numberFromEnv = (name: string, fallback: number): number => {
   const value = Number(process.env[name] ?? fallback);
@@ -78,6 +79,7 @@ export const databaseConfig = (): TypeOrmModuleOptions => ({
     OrderFulfillment1766880000000,
     RefundOperations1766880000000,
     VariantMedia1766966400000,
+    EarlyPaymentReconciliation1767052800000,
   ],
 });
 
@@ -93,6 +95,10 @@ export const mercadoPagoConfig = () => ({
   reconciliationGraceSeconds: numberFromEnv(
     "MP_RECONCILIATION_GRACE_SECONDS",
     120,
+  ),
+  earlyReconciliationIntervalSeconds: numberFromEnv(
+    "MP_EARLY_RECONCILIATION_INTERVAL_SECONDS",
+    60,
   ),
   pendingReviewHours: numberFromEnv("MP_PENDING_REVIEW_HOURS", 24),
 });

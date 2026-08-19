@@ -24,6 +24,7 @@ import { ProductVariant } from "../products/entities/product-variant.entity";
 import { RefundOperation } from "../payments/entities/refund-operation.entity";
 import { RefundOperations1766880000000 } from "./migrations/1766880000000-RefundOperations";
 import { VariantMedia1766966400000 } from "./migrations/1766966400000-VariantMedia";
+import { EarlyPaymentReconciliation1767052800000 } from "./migrations/1767052800000-EarlyPaymentReconciliation";
 export const AppDataSource = new DataSource({
   type: "postgres",
   host: process.env.DATABASE_HOST ?? "localhost",
@@ -58,5 +59,6 @@ export const AppDataSource = new DataSource({
     OrderFulfillment1766880000000,
     RefundOperations1766880000000,
     VariantMedia1766966400000,
+    EarlyPaymentReconciliation1767052800000,
   ],
 });

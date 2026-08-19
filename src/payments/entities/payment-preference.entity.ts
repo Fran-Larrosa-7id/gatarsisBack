@@ -39,4 +39,6 @@ export class PaymentPreference {
   updatedAt!: Date;
   @Column({ name: "ready_at", type: "timestamptz", nullable: true })
   readyAt!: Date | null;
+  @Column({ name: "last_reconciliation_at", type: "timestamptz", nullable: true })
+  lastReconciliationAt!: Date | null;
 }
