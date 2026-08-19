@@ -122,16 +122,14 @@ export class PaymentsService {
     } catch (error) {
       const recovered = await this.recoverPreference(orderId);
       if (recovered) return this.preferenceResponse(prepared.order, recovered);
-      await this.dataSource
-        .getRepository(PaymentPreference)
-        .update(
-          { orderId },
-          {
-            status: PaymentPreferenceStatus.FAILED,
-            lastErrorCode: "CREATE_FAILED",
-            lastErrorAt: new Date(),
-          },
-        );
+      await this.dataSource.getRepository(PaymentPreference).update(
+        { orderId },
+        {
+          status: PaymentPreferenceStatus.FAILED,
+          lastErrorCode: "CREATE_FAILED",
+          lastErrorAt: new Date(),
+        },
+      );
       throw new DomainError(
         "PAYMENT_PREFERENCE_CREATION_FAILED",
         "No se pudo crear la preference de pago.",
@@ -225,9 +223,12 @@ export class PaymentsService {
     body: Record<string, unknown>;
   }) {
     const dataId = input.query["data.id"];
-    const bodyDataId = typeof input.body.data === "object" && input.body.data && "id" in input.body.data
-      ? String((input.body.data as { id?: unknown }).id ?? "") || null
-      : null;
+    const bodyDataId =
+      typeof input.body.data === "object" &&
+      input.body.data &&
+      "id" in input.body.data
+        ? String((input.body.data as { id?: unknown }).id ?? "") || null
+        : null;
     const queryDataId = Array.isArray(dataId) ? dataId[0] : (dataId ?? null);
     this.logger.log({
       hasXSignature: Boolean(input.headers["x-signature"]),
@@ -235,7 +236,8 @@ export class PaymentsService {
       dataId: queryDataId,
       bodyDataId,
       dataIdSource: "query.data.id",
-      queryAndBodyDataIdMatch: bodyDataId === null ? null : bodyDataId === queryDataId,
+      queryAndBodyDataIdMatch:
+        bodyDataId === null ? null : bodyDataId === queryDataId,
       webhookSecretConfigured: Boolean(this.config.webhookSecret),
     });
     try {
@@ -268,6 +270,18 @@ export class PaymentsService {
         processingResult: "IGNORED_NON_PAYMENT_OR_MISSING_ID",
       });
       return { received: true };
+    }
+    if (bodyDataId !== providerPaymentId) {
+      this.trace("webhook_immediate_processing_skipped", {
+        providerPaymentId,
+        processingResult: "QUERY_BODY_RESOURCE_ID_MISMATCH",
+      });
+      throw new DomainError(
+        "WEBHOOK_RESOURCE_ID_MISMATCH",
+        "El recurso del webhook no coincide entre query y payload.",
+        undefined,
+        400,
+      );
     }
     const eventId = input.body.id ? String(input.body.id) : null;
     let webhookEventId: string | null = null;
@@ -319,6 +333,7 @@ export class PaymentsService {
       });
       if (existing && existing.status !== WebhookEventStatus.PROCESSED) {
         await events.update(existing.id, {
+          providerResourceId: providerPaymentId,
           status: WebhookEventStatus.PENDING,
           attempts: 0,
           nextAttemptAt: null,
@@ -328,13 +343,15 @@ export class PaymentsService {
         this.trace("webhook_requeued", {
           providerPaymentId,
           webhookEventId,
-          processingResult: "PENDING",
+          processingResult: "PENDING_RESOURCE_ID_REFRESHED",
         });
       } else {
         this.trace("webhook_immediate_processing_skipped", {
           providerPaymentId,
           webhookEventId: existing?.id ?? null,
-          processingResult: existing ? "ALREADY_PROCESSED" : "DUPLICATE_EVENT_NOT_FOUND",
+          processingResult: existing
+            ? "ALREADY_PROCESSED"
+            : "DUPLICATE_EVENT_NOT_FOUND",
         });
       }
     }
@@ -351,7 +368,10 @@ export class PaymentsService {
     });
     try {
       const result = await this.processWebhookEvent(webhookEventId);
-      const trace = result === "FAILED" ? "webhook_immediate_processing_failed" : "webhook_immediate_processing_finished";
+      const trace =
+        result === "FAILED"
+          ? "webhook_immediate_processing_failed"
+          : "webhook_immediate_processing_finished";
       this.trace(trace, {
         providerPaymentId,
         webhookEventId,
@@ -370,19 +390,17 @@ export class PaymentsService {
 
   @Cron("15 * * * * *") async processWebhookInbox() {
     const now = new Date();
-    const events = await this.dataSource
-      .getRepository(WebhookEvent)
-      .find({
-        where: [
-          { status: WebhookEventStatus.PENDING },
-          {
-            status: WebhookEventStatus.RETRY,
-            nextAttemptAt: LessThanOrEqual(now),
-          },
-        ],
-        take: 25,
-        order: { receivedAt: "ASC" },
-      });
+    const events = await this.dataSource.getRepository(WebhookEvent).find({
+      where: [
+        { status: WebhookEventStatus.PENDING },
+        {
+          status: WebhookEventStatus.RETRY,
+          nextAttemptAt: LessThanOrEqual(now),
+        },
+      ],
+      take: 25,
+      order: { receivedAt: "ASC" },
+    });
     for (const event of events) await this.processWebhookEvent(event.id);
   }
   async processWebhookEvent(id: string) {
@@ -410,13 +428,11 @@ export class PaymentsService {
         processingResult: remote.status,
       });
       await this.recordAndApply(remote);
-      await this.dataSource
-        .getRepository(WebhookEvent)
-        .update(id, {
-          status: WebhookEventStatus.PROCESSED,
-          processedAt: new Date(),
-          lastError: null,
-        });
+      await this.dataSource.getRepository(WebhookEvent).update(id, {
+        status: WebhookEventStatus.PROCESSED,
+        processedAt: new Date(),
+        lastError: null,
+      });
       this.trace("webhook_event_processed", {
         webhookEventId: id,
         providerPaymentId: remote.id,
@@ -426,29 +442,28 @@ export class PaymentsService {
       return "PROCESSED";
     } catch (error) {
       const attempts = event.attempts + 1;
-      await this.dataSource
-        .getRepository(WebhookEvent)
-        .update(id, {
-          status:
-            attempts >= 4
-              ? WebhookEventStatus.DEAD_LETTER
-              : WebhookEventStatus.RETRY,
-          attempts,
-          nextAttemptAt: new Date(
-            Date.now() +
-              [5000, 30000, 120000, 600000][Math.min(attempts - 1, 3)],
-          ),
-          lastError:
-            error instanceof Error
-              ? error.message.slice(0, 250)
-              : "Unknown error",
-        });
+      await this.dataSource.getRepository(WebhookEvent).update(id, {
+        status:
+          attempts >= 4
+            ? WebhookEventStatus.DEAD_LETTER
+            : WebhookEventStatus.RETRY,
+        attempts,
+        nextAttemptAt: new Date(
+          Date.now() + [5000, 30000, 120000, 600000][Math.min(attempts - 1, 3)],
+        ),
+        lastError:
+          error instanceof Error
+            ? error.message.slice(0, 250)
+            : "Unknown error",
+      });
       this.logger.warn({
         step: "webhook_event_failed",
         webhookEventId: id,
         providerPaymentId: event.providerResourceId,
         processingResult:
-          attempts >= 4 ? WebhookEventStatus.DEAD_LETTER : WebhookEventStatus.RETRY,
+          attempts >= 4
+            ? WebhookEventStatus.DEAD_LETTER
+            : WebhookEventStatus.RETRY,
         errorCode: this.errorCode(error),
       });
       return "FAILED";
@@ -464,7 +479,10 @@ export class PaymentsService {
       });
       return;
     }
-    this.trace("payment_record_started", { providerPaymentId: remote.id, orderId });
+    this.trace("payment_record_started", {
+      providerPaymentId: remote.id,
+      orderId,
+    });
     await this.dataSource.transaction(async (manager) => {
       const order = await manager
         .createQueryBuilder(Order, "order")
@@ -629,10 +647,11 @@ export class PaymentsService {
     for (const { id: orderId } of orders) {
       this.trace("early_reconciliation_started", { orderId });
       try {
-        const payments = await this.gateway.searchPaymentsByExternalReference(
-          orderId,
+        const payments =
+          await this.gateway.searchPaymentsByExternalReference(orderId);
+        const approved = payments.find(
+          (payment) => payment.status === "approved",
         );
-        const approved = payments.find((payment) => payment.status === "approved");
         if (approved) await this.recordAndApply(approved);
         else if (
           payments.some((payment) =>
@@ -642,10 +661,9 @@ export class PaymentsService {
           )
         )
           for (const payment of payments) await this.recordAndApply(payment);
-        await this.dataSource.getRepository(PaymentPreference).update(
-          { orderId },
-          { lastReconciliationAt: now },
-        );
+        await this.dataSource
+          .getRepository(PaymentPreference)
+          .update({ orderId }, { lastReconciliationAt: now });
         this.trace("early_reconciliation_finished", {
           orderId,
           processingResult: approved
@@ -655,10 +673,9 @@ export class PaymentsService {
               : "NO_PAYMENT",
         });
       } catch (error) {
-        await this.dataSource.getRepository(PaymentPreference).update(
-          { orderId },
-          { lastReconciliationAt: now },
-        );
+        await this.dataSource
+          .getRepository(PaymentPreference)
+          .update({ orderId }, { lastReconciliationAt: now });
         this.logger.warn({
           step: "early_reconciliation_failed",
           orderId,
@@ -673,15 +690,13 @@ export class PaymentsService {
     const cutoff = new Date(
       Date.now() - this.config.reconciliationGraceSeconds * 1000,
     );
-    const orders = await this.dataSource
-      .getRepository(Order)
-      .find({
-        where: {
-          status: OrderStatus.AWAITING_PAYMENT,
-          reservationExpiresAt: LessThanOrEqual(cutoff),
-        },
-        take: 25,
-      });
+    const orders = await this.dataSource.getRepository(Order).find({
+      where: {
+        status: OrderStatus.AWAITING_PAYMENT,
+        reservationExpiresAt: LessThanOrEqual(cutoff),
+      },
+      take: 25,
+    });
     for (const order of orders) {
       try {
         const payments = await this.gateway.searchPaymentsByExternalReference(
