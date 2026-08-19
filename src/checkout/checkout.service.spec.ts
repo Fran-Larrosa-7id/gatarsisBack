@@ -1,4 +1,5 @@
 import { DomainError } from "../common/domain-error";
+import { FulfillmentMethod } from "../orders/entities/order-fulfillment.entity";
 import { CheckoutService } from "./checkout.service";
 
 describe("CheckoutService input guards", () => {
@@ -13,6 +14,12 @@ describe("CheckoutService input guards", () => {
           items: [
             { variantId: "00000000-0000-4000-8000-000000000001", quantity: 1 },
           ],
+          customer: {
+            name: "Test Buyer",
+            email: "buyer@example.com",
+            phone: "2491234567",
+          },
+          fulfillment: { method: FulfillmentMethod.PICKUP },
         },
         "",
       ),

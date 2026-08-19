@@ -14,11 +14,14 @@ import { PaymentsMercadoPago1766534400000 } from "../database/migrations/1766534
 import { AdminAuth1766620800000 } from "../database/migrations/1766620800000-AdminAuth";
 import { AdminProducts1766707200000 } from "../database/migrations/1766707200000-AdminProducts";
 import { AdminPaymentReview1766793600000 } from "../database/migrations/1766793600000-AdminPaymentReview";
+import { OrderFulfillment1766880000000 } from "../database/migrations/1766880000000-OrderFulfillment";
+import { OrderFulfillment } from "../orders/entities/order-fulfillment.entity";
 import { ProductMedia } from "../products/entities/product-media.entity";
 import { Product } from "../products/entities/product.entity";
 import { ProductVariant } from "../products/entities/product-variant.entity";
 import { RefundOperation } from "../payments/entities/refund-operation.entity";
 import { RefundOperations1766880000000 } from "../database/migrations/1766880000000-RefundOperations";
+import { VariantMedia1766966400000 } from "../database/migrations/1766966400000-VariantMedia";
 
 const numberFromEnv = (name: string, fallback: number): number => {
   const value = Number(process.env[name] ?? fallback);
@@ -61,6 +64,7 @@ export const databaseConfig = (): TypeOrmModuleOptions => ({
     AdminUser,
     AdminSession,
     AdminAuditLog,
+    OrderFulfillment,
     ProductMedia,
     RefundOperation,
   ],
@@ -71,7 +75,9 @@ export const databaseConfig = (): TypeOrmModuleOptions => ({
     AdminAuth1766620800000,
     AdminProducts1766707200000,
     AdminPaymentReview1766793600000,
+    OrderFulfillment1766880000000,
     RefundOperations1766880000000,
+    VariantMedia1766966400000,
   ],
 });
 

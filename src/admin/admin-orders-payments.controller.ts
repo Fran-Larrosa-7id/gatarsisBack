@@ -6,11 +6,12 @@ import {
   Param,
   ParseUUIDPipe,
   Post,
+  Patch,
   Query,
   Req,
 } from "@nestjs/common";
 import { DataSource } from "typeorm";
-import { Order } from "../orders/entities/order.entity";
+import { Order, OrderStatus } from "../orders/entities/order.entity";
 import { OrderItem } from "../orders/entities/order-item.entity";
 import {
   Payment,
@@ -24,6 +25,7 @@ import { DomainError } from '../common/domain-error';
 import { AdminOrderListQueryDto, AdminPaymentListQueryDto, AdminPaymentReviewListQueryDto, ResolveReviewDto } from './admin-orders-payments.dto';
 import { toAdminMovement, toAdminOrderItem, toAdminOrderListItem, toAdminPaymentDetail, toAdminPaymentListItem, toAdminPreference } from './admin-orders-payments.responses';
 import { RefundOperation } from '../payments/entities/refund-operation.entity';
+import { FulfillmentStatus, OrderFulfillment } from '../orders/entities/order-fulfillment.entity';
 @Controller("admin")
 export class AdminOrdersPaymentsController {
   constructor(private ds: DataSource) {}
@@ -78,8 +80,10 @@ export class AdminOrdersPaymentsController {
         .createQueryBuilder("m")
         .where("m.order_id=:id", { id })
         .getMany();
-    return { order: { id: o.id, status: o.status, totalInCents: o.totalInCents, createdAt: o.createdAt, reservationExpiresAt: o.reservationExpiresAt, paidAt: o.paidAt ?? null }, items: o.items.map(toAdminOrderItem), paymentPreference: toAdminPreference(preference), payments: payments.map(toAdminPaymentDetail), inventoryMovements: movements.map(toAdminMovement) };
+    const f=await this.ds.getRepository(OrderFulfillment).findOneBy({orderId:id});
+    return { order: { id: o.id, status: o.status, totalInCents: o.totalInCents, createdAt: o.createdAt, reservationExpiresAt: o.reservationExpiresAt, paidAt: o.paidAt ?? null }, items: o.items.map(toAdminOrderItem), paymentPreference: toAdminPreference(preference), payments: payments.map(toAdminPaymentDetail), inventoryMovements: movements.map(toAdminMovement), fulfillment:f?{id:f.id,method:f.method,status:f.status,customer:{name:f.customerName,email:f.customerEmail,phone:f.customerPhone},customerNote:f.customerNote,adminNote:f.adminNote,readyAt:f.readyAt,completedAt:f.completedAt,createdAt:f.createdAt,updatedAt:f.updatedAt}:null };
   }
+  @Patch('orders/:id/fulfillment') async updateFulfillment(@Param('id',new ParseUUIDPipe())id:string,@Body()b:{status:FulfillmentStatus;adminNote?:string},@Req()r:AdminRequest){return this.ds.transaction(async m=>{const o=await m.findOneBy(Order,{id});const f=await m.findOneBy(OrderFulfillment,{orderId:id});if(!o)throw new NotFoundException({code:'ORDER_NOT_FOUND'});if(!f)throw new DomainError('FULFILLMENT_NOT_FOUND','Fulfillment inexistente.',undefined,404);if(o.status===OrderStatus.REFUNDED)throw new DomainError('FULFILLMENT_NOT_ALLOWED','No permitido.',undefined,409);const valid=(f.status===FulfillmentStatus.PENDING&&b.status===FulfillmentStatus.READY_FOR_PICKUP)||(f.status===FulfillmentStatus.READY_FOR_PICKUP&&b.status===FulfillmentStatus.COMPLETED);if(!valid)throw new DomainError('INVALID_FULFILLMENT_TRANSITION','Transición inválida.',undefined,409);if(b.status===FulfillmentStatus.READY_FOR_PICKUP&&o.status!==OrderStatus.PAID)throw new DomainError('ORDER_NOT_PAID','La orden no está pagada.',undefined,409);const previous=f.status;f.status=b.status;if(b.adminNote!==undefined)f.adminNote=b.adminNote.trim()||null;if(b.status===FulfillmentStatus.READY_FOR_PICKUP)f.readyAt=new Date();else f.completedAt=new Date();await m.save(f);await m.save(AdminAuditLog,{adminUserId:r.admin!.id,action:'FULFILLMENT_STATUS_CHANGED',entityType:'ORDER_FULFILLMENT',entityId:f.id,metadata:{orderId:id,fulfillmentId:f.id,previousStatus:previous,newStatus:f.status}});return {id:f.id,status:f.status,adminNote:f.adminNote,readyAt:f.readyAt,completedAt:f.completedAt};});}
   @Get("payments") async payments(@Query() q: AdminPaymentListQueryDto & { onlyUnresolvedReviews?: boolean }) {
     this.validateDateRange(q);
     const { p, s, pagination } = this.page(q);

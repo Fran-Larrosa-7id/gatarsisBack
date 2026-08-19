@@ -78,24 +78,28 @@ export class AdminProductsService {
     };
     const [field, dir] = (query.sort ?? "sortOrder:asc").split(":");
     const direction = dir?.toUpperCase() === "DESC" ? "DESC" : "ASC";
+    const sortExpression = fields[field] ?? fields.sortOrder;
     const total = await base.clone().getCount();
-    const rows = await base
+    const pageQuery = base
       .clone()
       .select("product.id", "id")
-      .orderBy(fields[field] ?? fields.sortOrder, direction)
-      .addOrderBy("product.name", "ASC")
+      .orderBy(sortExpression, direction);
+
+    if (sortExpression !== "product.name") {
+      pageQuery.addOrderBy("product.name", "ASC");
+    }
+
+    const rows = await pageQuery
       .addOrderBy("product.id", "ASC")
       .skip((page - 1) * pageSize)
       .take(pageSize)
       .getRawMany<{ id: string }>();
     const ids = rows.map((row) => row.id);
     const products = ids.length
-      ? await this.dataSource
-          .getRepository(Product)
-          .find({
-            where: { id: In(ids) },
-            relations: { variants: true, media: true },
-          })
+      ? await this.dataSource.getRepository(Product).find({
+          where: { id: In(ids) },
+          relations: { variants: true, media: true },
+        })
       : [];
     const byId = new Map(products.map((product) => [product.id, product]));
     return {
@@ -254,10 +258,30 @@ export class AdminProductsService {
     return this.dataSource.transaction(async (m) => {
       if (!(await m.existsBy(Product, { id: productId })))
         throw notFound("PRODUCT_NOT_FOUND", "El producto no existe.");
+      const variantId = dto.variantId ?? null;
+      if (
+        variantId &&
+        !(await m.existsBy(ProductVariant, { id: variantId, productId }))
+      )
+        throw new DomainError(
+          "VARIANT_NOT_BELONG_TO_PRODUCT",
+          "La variante no pertenece al producto.",
+          undefined,
+          409,
+        );
       if (dto.isCover)
-        await m.update(ProductMedia, { productId }, { isCover: false });
+        await m
+          .createQueryBuilder()
+          .update(ProductMedia)
+          .set({ isCover: false })
+          .where(
+            "product_id = :productId AND variant_id IS NOT DISTINCT FROM :variantId",
+            { productId, variantId },
+          )
+          .execute();
       const media = await m.save(ProductMedia, {
         productId,
+        variantId,
         url: dto.url,
         alt: dto.alt.trim(),
         sortOrder: dto.sortOrder ?? 0,
@@ -278,17 +302,37 @@ export class AdminProductsService {
       const media = await m.findOneBy(ProductMedia, { id });
       if (!media)
         throw notFound("PRODUCT_MEDIA_NOT_FOUND", "El recurso no existe.");
-      if (dto.isCover)
-        await m.update(
-          ProductMedia,
-          { productId: media.productId },
-          { isCover: false },
+      const variantId =
+        dto.variantId === undefined ? media.variantId : dto.variantId;
+      if (
+        variantId &&
+        !(await m.existsBy(ProductVariant, {
+          id: variantId,
+          productId: media.productId,
+        }))
+      )
+        throw new DomainError(
+          "VARIANT_NOT_BELONG_TO_PRODUCT",
+          "La variante no pertenece al producto.",
+          undefined,
+          409,
         );
+      if (dto.isCover)
+        await m
+          .createQueryBuilder()
+          .update(ProductMedia)
+          .set({ isCover: false })
+          .where(
+            "product_id = :productId AND variant_id IS NOT DISTINCT FROM :variantId",
+            { productId: media.productId, variantId },
+          )
+          .execute();
       Object.assign(media, {
         ...(dto.url !== undefined ? { url: dto.url } : {}),
         ...(dto.alt !== undefined ? { alt: dto.alt.trim() } : {}),
         ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
         ...(dto.isCover !== undefined ? { isCover: dto.isCover } : {}),
+        ...(dto.variantId !== undefined ? { variantId: dto.variantId } : {}),
       });
       await m.save(media);
       await this.audit(

@@ -24,8 +24,19 @@ export class ProductsController {
       id: product.id,
       slug: product.slug,
       name: product.name,
-      ...(product.shortDescription ? { shortDescription: product.shortDescription } : {}),
-      media: (product.media ?? []).sort((a, b) => a.sortOrder - b.sortOrder).map((media) => ({ id: media.id, url: media.url, alt: media.alt, sortOrder: media.sortOrder, isCover: media.isCover })),
+      ...(product.shortDescription
+        ? { shortDescription: product.shortDescription }
+        : {}),
+      media: (product.media ?? [])
+        .filter((media) => media.variantId === null)
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((media) => ({
+          id: media.id,
+          url: media.url,
+          alt: media.alt,
+          sortOrder: media.sortOrder,
+          isCover: media.isCover,
+        })),
       variants: product.variants.map((variant) => ({
         id: variant.id,
         sku: variant.sku,
@@ -33,6 +44,16 @@ export class ProductsController {
         color: variant.color,
         size: variant.size,
         priceInCents: variant.priceInCents,
+        media: (product.media ?? [])
+          .filter((media) => media.variantId === variant.id)
+          .sort((a, b) => a.sortOrder - b.sortOrder)
+          .map((media) => ({
+            id: media.id,
+            url: media.url,
+            alt: media.alt,
+            sortOrder: media.sortOrder,
+            isCover: media.isCover,
+          })),
         availableStock: Math.max(
           0,
           (variant.inventory?.stockOnHand ?? 0) -

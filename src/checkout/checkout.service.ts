@@ -7,6 +7,11 @@ import { InventoryService } from "../inventory/inventory.service";
 import { ProductVariant } from "../products/entities/product-variant.entity";
 import { Order, OrderStatus } from "../orders/entities/order.entity";
 import { OrderItem } from "../orders/entities/order-item.entity";
+import {
+  FulfillmentMethod,
+  FulfillmentStatus,
+  OrderFulfillment,
+} from "../orders/entities/order-fulfillment.entity";
 import { ReserveCheckoutDto } from "./dto/reserve-checkout.dto";
 
 type NormalizedItem = { variantId: string; quantity: number };
@@ -25,12 +30,28 @@ export class CheckoutService {
         400,
       );
     const items = this.normalize(dto.items);
+    const customer = {
+      name: dto.customer.name.trim(),
+      email: dto.customer.email.trim().toLowerCase(),
+      phone: dto.customer.phone.trim(),
+    };
+    const fulfillment = {
+      method: dto.fulfillment.method,
+      note: dto.fulfillment.note?.trim() || null,
+    };
     const fingerprint = createHash("sha256")
-      .update(JSON.stringify(items))
+      .update(JSON.stringify({ items, customer, fulfillment }))
       .digest("hex");
     try {
       return await this.dataSource.transaction((manager) =>
-        this.reserveInTransaction(manager, items, idempotencyKey, fingerprint),
+        this.reserveInTransaction(
+          manager,
+          items,
+          customer,
+          fulfillment,
+          idempotencyKey,
+          fingerprint,
+        ),
       );
     } catch (error) {
       if (
@@ -48,6 +69,8 @@ export class CheckoutService {
   private async reserveInTransaction(
     manager: EntityManager,
     items: NormalizedItem[],
+    customer: { name: string; email: string; phone: string },
+    fulfillment: { method: FulfillmentMethod; note: string | null },
     idempotencyKey: string,
     fingerprint: string,
   ) {
@@ -116,6 +139,18 @@ export class CheckoutService {
       });
     }
     await manager.save(OrderItem, orderItems);
+    await manager.save(OrderFulfillment, {
+      orderId: order.id,
+      method: fulfillment.method,
+      status: FulfillmentStatus.PENDING,
+      customerName: customer.name,
+      customerEmail: customer.email,
+      customerPhone: customer.phone,
+      customerNote: fulfillment.note,
+      adminNote: null,
+      readyAt: null,
+      completedAt: null,
+    });
     order.subtotalInCents = total;
     order.totalInCents = total;
     await manager.save(Order, order);

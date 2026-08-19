@@ -17,6 +17,17 @@ import { Order } from "../src/orders/entities/order.entity";
 import { PaymentsService } from "../src/payments/payments.service";
 
 describe("admin inventory (PostgreSQL)", () => {
+  const reservePayload = (
+    items: { variantId: string; quantity: number }[],
+  ) => ({
+    items,
+    customer: {
+      name: "Test Buyer",
+      email: "buyer@example.com",
+      phone: "2491234567",
+    },
+    fulfillment: { method: "PICKUP", note: null },
+  });
   let app: INestApplication, dataSource: DataSource;
   beforeAll(async () => {
     const module = await Test.createTestingModule({
@@ -43,15 +54,13 @@ describe("admin inventory (PostgreSQL)", () => {
     await dataSource.query(
       "TRUNCATE admin_audit_logs, admin_sessions, admin_users, inventory_movements, order_items, orders, inventory, product_variants, products RESTART IDENTITY CASCADE",
     );
-    await dataSource
-      .getRepository(AdminUser)
-      .save({
-        email: "inventory-admin@test.local",
-        passwordHash: await bcrypt.hash("CorrectHorseBatteryStaple!", 4),
-        role: AdminRole.ADMIN,
-        active: true,
-        lastLoginAt: null,
-      });
+    await dataSource.getRepository(AdminUser).save({
+      email: "inventory-admin@test.local",
+      passwordHash: await bcrypt.hash("CorrectHorseBatteryStaple!", 4),
+      role: AdminRole.ADMIN,
+      active: true,
+      lastLoginAt: null,
+    });
     const login = await request(app.getHttpServer())
       .post("/api/v1/admin/auth/login")
       .set("X-Forwarded-For", "203.0.113.100")
@@ -61,29 +70,25 @@ describe("admin inventory (PostgreSQL)", () => {
       })
       .expect(200);
     const bearer = { Authorization: `Bearer ${login.body.accessToken}` };
-    const product = await dataSource
-      .getRepository(Product)
-      .save({
-        slug: `stock-${crypto.randomUUID()}`,
-        name: "Stock product",
-        active: true,
-        shortDescription: null,
-        featured: false,
-        sortOrder: 0,
-      });
-    const variant = await dataSource
-      .getRepository(ProductVariant)
-      .save({
-        productId: product.id,
-        sku: `STOCK-${crypto.randomUUID()}`,
-        name: "Stock variant",
-        color: null,
-        size: null,
-        priceInCents: 100,
-        active: true,
-        sortOrder: 0,
-        lowStockThreshold: 3,
-      });
+    const product = await dataSource.getRepository(Product).save({
+      slug: `stock-${crypto.randomUUID()}`,
+      name: "Stock product",
+      active: true,
+      shortDescription: null,
+      featured: false,
+      sortOrder: 0,
+    });
+    const variant = await dataSource.getRepository(ProductVariant).save({
+      productId: product.id,
+      sku: `STOCK-${crypto.randomUUID()}`,
+      name: "Stock variant",
+      color: null,
+      size: null,
+      priceInCents: 100,
+      active: true,
+      sortOrder: 0,
+      lowStockThreshold: 3,
+    });
     await dataSource
       .getRepository(Inventory)
       .save({ variantId: variant.id, stockOnHand: 5, reservedStock: 0 });
@@ -137,15 +142,13 @@ describe("admin inventory (PostgreSQL)", () => {
     await dataSource.query(
       "TRUNCATE admin_audit_logs, admin_sessions, admin_users, inventory_movements, order_items, orders, inventory, product_variants, products RESTART IDENTITY CASCADE",
     );
-    await dataSource
-      .getRepository(AdminUser)
-      .save({
-        email: "concurrent-admin@test.local",
-        passwordHash: await bcrypt.hash("CorrectHorseBatteryStaple!", 4),
-        role: AdminRole.ADMIN,
-        active: true,
-        lastLoginAt: null,
-      });
+    await dataSource.getRepository(AdminUser).save({
+      email: "concurrent-admin@test.local",
+      passwordHash: await bcrypt.hash("CorrectHorseBatteryStaple!", 4),
+      role: AdminRole.ADMIN,
+      active: true,
+      lastLoginAt: null,
+    });
     const login = await request(app.getHttpServer())
       .post("/api/v1/admin/auth/login")
       .set("X-Forwarded-For", "203.0.113.101")
@@ -153,29 +156,25 @@ describe("admin inventory (PostgreSQL)", () => {
         email: "concurrent-admin@test.local",
         password: "CorrectHorseBatteryStaple!",
       });
-    const product = await dataSource
-      .getRepository(Product)
-      .save({
-        slug: `concurrent-${crypto.randomUUID()}`,
-        name: "Concurrent",
-        active: true,
-        shortDescription: null,
-        featured: false,
-        sortOrder: 0,
-      });
-    const variant = await dataSource
-      .getRepository(ProductVariant)
-      .save({
-        productId: product.id,
-        sku: `CON-${crypto.randomUUID()}`,
-        name: "Concurrent",
-        color: null,
-        size: null,
-        priceInCents: 100,
-        active: true,
-        sortOrder: 0,
-        lowStockThreshold: null,
-      });
+    const product = await dataSource.getRepository(Product).save({
+      slug: `concurrent-${crypto.randomUUID()}`,
+      name: "Concurrent",
+      active: true,
+      shortDescription: null,
+      featured: false,
+      sortOrder: 0,
+    });
+    const variant = await dataSource.getRepository(ProductVariant).save({
+      productId: product.id,
+      sku: `CON-${crypto.randomUUID()}`,
+      name: "Concurrent",
+      color: null,
+      size: null,
+      priceInCents: 100,
+      active: true,
+      sortOrder: 0,
+      lowStockThreshold: null,
+    });
     await dataSource
       .getRepository(Inventory)
       .save({ variantId: variant.id, stockOnHand: 5, reservedStock: 0 });
@@ -183,7 +182,7 @@ describe("admin inventory (PostgreSQL)", () => {
       request(app.getHttpServer())
         .post("/api/v1/checkout/reserve")
         .set("Idempotency-Key", `concurrent-${crypto.randomUUID()}`)
-        .send({ items: [{ variantId: variant.id, quantity: 1 }] }),
+        .send(reservePayload([{ variantId: variant.id, quantity: 1 }])),
       request(app.getHttpServer())
         .post(`/api/v1/admin/inventory/${variant.id}/restock`)
         .set("Authorization", `Bearer ${login.body.accessToken}`)
@@ -197,20 +196,16 @@ describe("admin inventory (PostgreSQL)", () => {
         .findOneByOrFail({ variantId: variant.id }),
     ).toMatchObject({ stockOnHand: 15, reservedStock: 1 });
     expect(
-      await dataSource
-        .getRepository(InventoryMovement)
-        .countBy({
-          variantId: variant.id,
-          type: InventoryMovementType.RESERVE,
-        }),
+      await dataSource.getRepository(InventoryMovement).countBy({
+        variantId: variant.id,
+        type: InventoryMovementType.RESERVE,
+      }),
     ).toBe(1);
     expect(
-      await dataSource
-        .getRepository(InventoryMovement)
-        .countBy({
-          variantId: variant.id,
-          type: InventoryMovementType.RESTOCK,
-        }),
+      await dataSource.getRepository(InventoryMovement).countBy({
+        variantId: variant.id,
+        type: InventoryMovementType.RESTOCK,
+      }),
     ).toBe(1);
     expect(
       await dataSource.query(
@@ -224,15 +219,13 @@ describe("admin inventory (PostgreSQL)", () => {
     await dataSource.query(
       "TRUNCATE admin_audit_logs, admin_sessions, admin_users, inventory_movements, order_items, orders, inventory, product_variants, products RESTART IDENTITY CASCADE",
     );
-    await dataSource
-      .getRepository(AdminUser)
-      .save({
-        email: "atomic-admin@test.local",
-        passwordHash: await bcrypt.hash("CorrectHorseBatteryStaple!", 4),
-        role: AdminRole.ADMIN,
-        active: true,
-        lastLoginAt: null,
-      });
+    await dataSource.getRepository(AdminUser).save({
+      email: "atomic-admin@test.local",
+      passwordHash: await bcrypt.hash("CorrectHorseBatteryStaple!", 4),
+      role: AdminRole.ADMIN,
+      active: true,
+      lastLoginAt: null,
+    });
     const login = await request(app.getHttpServer())
       .post("/api/v1/admin/auth/login")
       .set("X-Forwarded-For", "203.0.113.102")
@@ -240,29 +233,25 @@ describe("admin inventory (PostgreSQL)", () => {
         email: "atomic-admin@test.local",
         password: "CorrectHorseBatteryStaple!",
       });
-    const product = await dataSource
-      .getRepository(Product)
-      .save({
-        slug: `atomic-${crypto.randomUUID()}`,
-        name: "Atomic",
-        active: true,
-        shortDescription: null,
-        featured: false,
-        sortOrder: 0,
-      });
-    const variant = await dataSource
-      .getRepository(ProductVariant)
-      .save({
-        productId: product.id,
-        sku: `ATM-${crypto.randomUUID()}`,
-        name: "Atomic",
-        color: null,
-        size: null,
-        priceInCents: 100,
-        active: true,
-        sortOrder: 0,
-        lowStockThreshold: null,
-      });
+    const product = await dataSource.getRepository(Product).save({
+      slug: `atomic-${crypto.randomUUID()}`,
+      name: "Atomic",
+      active: true,
+      shortDescription: null,
+      featured: false,
+      sortOrder: 0,
+    });
+    const variant = await dataSource.getRepository(ProductVariant).save({
+      productId: product.id,
+      sku: `ATM-${crypto.randomUUID()}`,
+      name: "Atomic",
+      color: null,
+      size: null,
+      priceInCents: 100,
+      active: true,
+      sortOrder: 0,
+      lowStockThreshold: null,
+    });
     await dataSource
       .getRepository(Inventory)
       .save({ variantId: variant.id, stockOnHand: 5, reservedStock: 0 });
@@ -295,15 +284,13 @@ describe("admin inventory (PostgreSQL)", () => {
     await dataSource.query(
       "TRUNCATE admin_audit_logs, admin_sessions, admin_users, inventory_movements, order_items, orders, inventory, product_variants, products RESTART IDENTITY CASCADE",
     );
-    await dataSource
-      .getRepository(AdminUser)
-      .save({
-        email: "adjust-admin@test.local",
-        passwordHash: await bcrypt.hash("CorrectHorseBatteryStaple!", 4),
-        role: AdminRole.ADMIN,
-        active: true,
-        lastLoginAt: null,
-      });
+    await dataSource.getRepository(AdminUser).save({
+      email: "adjust-admin@test.local",
+      passwordHash: await bcrypt.hash("CorrectHorseBatteryStaple!", 4),
+      role: AdminRole.ADMIN,
+      active: true,
+      lastLoginAt: null,
+    });
     const login = await request(app.getHttpServer())
       .post("/api/v1/admin/auth/login")
       .set("X-Forwarded-For", "203.0.113.103")
@@ -311,29 +298,25 @@ describe("admin inventory (PostgreSQL)", () => {
         email: "adjust-admin@test.local",
         password: "CorrectHorseBatteryStaple!",
       });
-    const product = await dataSource
-      .getRepository(Product)
-      .save({
-        slug: `adjust-${crypto.randomUUID()}`,
-        name: "Adjust",
-        active: true,
-        shortDescription: null,
-        featured: false,
-        sortOrder: 0,
-      });
-    const variant = await dataSource
-      .getRepository(ProductVariant)
-      .save({
-        productId: product.id,
-        sku: `ADJ-${crypto.randomUUID()}`,
-        name: "Adjust",
-        color: null,
-        size: null,
-        priceInCents: 100,
-        active: true,
-        sortOrder: 0,
-        lowStockThreshold: null,
-      });
+    const product = await dataSource.getRepository(Product).save({
+      slug: `adjust-${crypto.randomUUID()}`,
+      name: "Adjust",
+      active: true,
+      shortDescription: null,
+      featured: false,
+      sortOrder: 0,
+    });
+    const variant = await dataSource.getRepository(ProductVariant).save({
+      productId: product.id,
+      sku: `ADJ-${crypto.randomUUID()}`,
+      name: "Adjust",
+      color: null,
+      size: null,
+      priceInCents: 100,
+      active: true,
+      sortOrder: 0,
+      lowStockThreshold: null,
+    });
     await dataSource
       .getRepository(Inventory)
       .save({ variantId: variant.id, stockOnHand: 1, reservedStock: 0 });
@@ -341,7 +324,7 @@ describe("admin inventory (PostgreSQL)", () => {
       request(app.getHttpServer())
         .post("/api/v1/checkout/reserve")
         .set("Idempotency-Key", `adjust-${crypto.randomUUID()}`)
-        .send({ items: [{ variantId: variant.id, quantity: 1 }] }),
+        .send(reservePayload([{ variantId: variant.id, quantity: 1 }])),
       request(app.getHttpServer())
         .post(`/api/v1/admin/inventory/${variant.id}/adjust`)
         .set("Authorization", `Bearer ${login.body.accessToken}`)
@@ -371,13 +354,11 @@ describe("admin inventory (PostgreSQL)", () => {
     const reservation = await request(app.getHttpServer())
       .post("/api/v1/checkout/reserve")
       .set("Idempotency-Key", `release-${crypto.randomUUID()}`)
-      .send({ items: [{ variantId: inventory.variantId, quantity: 1 }] })
+      .send(reservePayload([{ variantId: inventory.variantId, quantity: 1 }]))
       .expect(201);
-    await dataSource
-      .getRepository(Order)
-      .update(reservation.body.orderId, {
-        reservationExpiresAt: new Date(Date.now() - 1000),
-      });
+    await dataSource.getRepository(Order).update(reservation.body.orderId, {
+      reservationExpiresAt: new Date(Date.now() - 1000),
+    });
     await Promise.all([
       app.get(OrdersService).expireReservations(new Date()),
       request(app.getHttpServer())
@@ -392,19 +373,100 @@ describe("admin inventory (PostgreSQL)", () => {
     expect(final.reservedStock).toBeLessThanOrEqual(final.stockOnHand);
   });
   it("serializes approved payment SALE against Admin ADJUST", async () => {
-    const inventory = await dataSource.getRepository(Inventory).findOneOrFail({ where: {}, relations: { variant: true } });
-    await dataSource.getRepository(Inventory).update({ id: inventory.id }, { stockOnHand: 5, reservedStock: 0 });
-    const login = await request(app.getHttpServer()).post("/api/v1/admin/auth/login").set("X-Forwarded-For", "203.0.113.105").send({ email: "adjust-admin@test.local", password: "CorrectHorseBatteryStaple!" });
-    const reservation = await request(app.getHttpServer()).post("/api/v1/checkout/reserve").set("Idempotency-Key", `sale-${crypto.randomUUID()}`).send({ items: [{ variantId: inventory.variantId, quantity: 1 }] }).expect(201);
-    const [_, adjustment] = await Promise.all([app.get(PaymentsService).recordAndApply({ id: `approved-${crypto.randomUUID()}`, status: "approved", transaction_amount: 1, currency_id: "ARS", external_reference: reservation.body.orderId }), request(app.getHttpServer()).post(`/api/v1/admin/inventory/${inventory.variantId}/adjust`).set("Authorization", `Bearer ${login.body.accessToken}`).send({ stockOnHand: 4, reason: "Concurrent sale" })]);
-    const final = await dataSource.getRepository(Inventory).findOneByOrFail({ variantId: inventory.variantId });
-    expect(final.stockOnHand).toBeGreaterThanOrEqual(0); expect(final.reservedStock).toBeGreaterThanOrEqual(0); expect(final.reservedStock).toBeLessThanOrEqual(final.stockOnHand); expect(await dataSource.getRepository(InventoryMovement).countBy({ variantId: inventory.variantId, type: InventoryMovementType.SALE })).toBe(1); expect([201, 409]).toContain(adjustment.status);
+    const inventory = await dataSource
+      .getRepository(Inventory)
+      .findOneOrFail({ where: {}, relations: { variant: true } });
+    await dataSource
+      .getRepository(Inventory)
+      .update({ id: inventory.id }, { stockOnHand: 5, reservedStock: 0 });
+    const login = await request(app.getHttpServer())
+      .post("/api/v1/admin/auth/login")
+      .set("X-Forwarded-For", "203.0.113.105")
+      .send({
+        email: "adjust-admin@test.local",
+        password: "CorrectHorseBatteryStaple!",
+      });
+    const reservation = await request(app.getHttpServer())
+      .post("/api/v1/checkout/reserve")
+      .set("Idempotency-Key", `sale-${crypto.randomUUID()}`)
+      .send(reservePayload([{ variantId: inventory.variantId, quantity: 1 }]))
+      .expect(201);
+    const [_, adjustment] = await Promise.all([
+      app
+        .get(PaymentsService)
+        .recordAndApply({
+          id: `approved-${crypto.randomUUID()}`,
+          status: "approved",
+          transaction_amount: 1,
+          currency_id: "ARS",
+          external_reference: reservation.body.orderId,
+        }),
+      request(app.getHttpServer())
+        .post(`/api/v1/admin/inventory/${inventory.variantId}/adjust`)
+        .set("Authorization", `Bearer ${login.body.accessToken}`)
+        .send({ stockOnHand: 4, reason: "Concurrent sale" }),
+    ]);
+    const final = await dataSource
+      .getRepository(Inventory)
+      .findOneByOrFail({ variantId: inventory.variantId });
+    expect(final.stockOnHand).toBeGreaterThanOrEqual(0);
+    expect(final.reservedStock).toBeGreaterThanOrEqual(0);
+    expect(final.reservedStock).toBeLessThanOrEqual(final.stockOnHand);
+    expect(
+      await dataSource
+        .getRepository(InventoryMovement)
+        .countBy({
+          variantId: inventory.variantId,
+          type: InventoryMovementType.SALE,
+        }),
+    ).toBe(1);
+    expect([201, 409]).toContain(adjustment.status);
   });
 
   it("rolls back restock if the PostgreSQL AdminAuditLog trigger fails", async () => {
-    const inventory = await dataSource.getRepository(Inventory).findOneOrFail({ where: {} }); const login = await request(app.getHttpServer()).post("/api/v1/admin/auth/login").set("X-Forwarded-For", "203.0.113.106").send({ email: "adjust-admin@test.local", password: "CorrectHorseBatteryStaple!" }); const before = inventory.stockOnHand;
-    await dataSource.query("CREATE OR REPLACE FUNCTION fail_audit_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test audit failure'; END $$"); await dataSource.query("CREATE TRIGGER fail_audit_test_trigger BEFORE INSERT ON admin_audit_logs FOR EACH ROW EXECUTE FUNCTION fail_audit_test()");
-    try { await request(app.getHttpServer()).post(`/api/v1/admin/inventory/${inventory.variantId}/restock`).set("Authorization", `Bearer ${login.body.accessToken}`).send({ quantity: 2, reason: "rollback audit" }).expect(500); } finally { await dataSource.query("DROP TRIGGER IF EXISTS fail_audit_test_trigger ON admin_audit_logs"); await dataSource.query("DROP FUNCTION IF EXISTS fail_audit_test()"); }
-    expect((await dataSource.getRepository(Inventory).findOneByOrFail({ variantId: inventory.variantId })).stockOnHand).toBe(before); expect(await dataSource.getRepository(InventoryMovement).countBy({ variantId: inventory.variantId, type: InventoryMovementType.RESTOCK })).toBe(0);
+    const inventory = await dataSource
+      .getRepository(Inventory)
+      .findOneOrFail({ where: {} });
+    const login = await request(app.getHttpServer())
+      .post("/api/v1/admin/auth/login")
+      .set("X-Forwarded-For", "203.0.113.106")
+      .send({
+        email: "adjust-admin@test.local",
+        password: "CorrectHorseBatteryStaple!",
+      });
+    const before = inventory.stockOnHand;
+    await dataSource.query(
+      "CREATE OR REPLACE FUNCTION fail_audit_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'test audit failure'; END $$",
+    );
+    await dataSource.query(
+      "CREATE TRIGGER fail_audit_test_trigger BEFORE INSERT ON admin_audit_logs FOR EACH ROW EXECUTE FUNCTION fail_audit_test()",
+    );
+    try {
+      await request(app.getHttpServer())
+        .post(`/api/v1/admin/inventory/${inventory.variantId}/restock`)
+        .set("Authorization", `Bearer ${login.body.accessToken}`)
+        .send({ quantity: 2, reason: "rollback audit" })
+        .expect(500);
+    } finally {
+      await dataSource.query(
+        "DROP TRIGGER IF EXISTS fail_audit_test_trigger ON admin_audit_logs",
+      );
+      await dataSource.query("DROP FUNCTION IF EXISTS fail_audit_test()");
+    }
+    expect(
+      (
+        await dataSource
+          .getRepository(Inventory)
+          .findOneByOrFail({ variantId: inventory.variantId })
+      ).stockOnHand,
+    ).toBe(before);
+    expect(
+      await dataSource
+        .getRepository(InventoryMovement)
+        .countBy({
+          variantId: inventory.variantId,
+          type: InventoryMovementType.RESTOCK,
+        }),
+    ).toBe(0);
   });
 });
