@@ -1,27 +1,319 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
-import { DataSource, ILike, QueryFailedError } from 'typeorm';
-import { DomainError } from '../common/domain-error';
-import { Product } from '../products/entities/product.entity';
-import { ProductVariant } from '../products/entities/product-variant.entity';
-import { ProductMedia } from '../products/entities/product-media.entity';
-import { AdminAuditLog } from './entities/admin-audit-log.entity';
-import { ProductDto, ProductListDto, ProductPatchDto, VariantDto, VariantPatchDto, MediaDto, MediaPatchDto } from './admin-products.dto';
+import { Injectable, NotFoundException } from "@nestjs/common";
+import { DataSource, ILike, In, QueryFailedError } from "typeorm";
+import { DomainError } from "../common/domain-error";
+import { Product } from "../products/entities/product.entity";
+import { ProductVariant } from "../products/entities/product-variant.entity";
+import { ProductMedia } from "../products/entities/product-media.entity";
+import { AdminAuditLog } from "./entities/admin-audit-log.entity";
+import {
+  ProductDto,
+  ProductListDto,
+  ProductPatchDto,
+  VariantDto,
+  VariantPatchDto,
+  MediaDto,
+  MediaPatchDto,
+} from "./admin-products.dto";
 
-const notFound = (code: string, message: string) => new NotFoundException({ code, message });
-const slugify = (value: string) => value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+const notFound = (code: string, message: string) =>
+  new NotFoundException({ code, message });
+const slugify = (value: string) =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 @Injectable()
 export class AdminProductsService {
   constructor(private readonly dataSource: DataSource) {}
-  private audit(manager: ReturnType<DataSource['createEntityManager']>, adminUserId: string, action: string, type: string, id: string) { return manager.save(AdminAuditLog, { adminUserId, action, entityType: type, entityId: id, metadata: null }); }
-  private async unique<T>(fn: () => Promise<T>, code: string) { try { return await fn(); } catch (e) { if (e instanceof QueryFailedError && (e as { code?: string }).code === '23505') throw new DomainError(code, code === 'PRODUCT_SLUG_CONFLICT' ? 'El slug ya existe.' : 'El SKU ya existe.'); throw e; } }
-  async list(query: ProductListDto) { const page = query.page ?? 1, pageSize = query.pageSize ?? 20; const qb = this.dataSource.getRepository(Product).createQueryBuilder('product').leftJoinAndSelect('product.variants', 'variant').leftJoinAndSelect('product.media', 'media'); if (query.search) qb.andWhere('(product.name ILIKE :search OR product.slug ILIKE :search)', { search: `%${query.search.trim()}%` }); if (query.active !== undefined) qb.andWhere('product.active = :active', { active: query.active }); const fields: Record<string, string> = { name: 'product.name', createdAt: 'product.created_at', sortOrder: 'product.sort_order' }; const [field, dir] = (query.sort ?? 'sortOrder:asc').split(':'); qb.orderBy(fields[field] ?? fields.sortOrder, dir?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC').addOrderBy('product.name', 'ASC').skip((page - 1) * pageSize).take(pageSize); const [items, total] = await qb.getManyAndCount(); return { items, page, pageSize, total }; }
-  async product(id: string) { const p = await this.dataSource.getRepository(Product).findOne({ where: { id }, relations: { variants: true, media: true } }); if (!p) throw notFound('PRODUCT_NOT_FOUND', 'El producto no existe.'); return p; }
-  async createProduct(dto: ProductDto, adminId: string) { const slug = slugify(dto.slug); if (!slug) throw new DomainError('INVALID_SLUG', 'Slug inválido.', undefined, 400); return this.unique(() => this.dataSource.transaction(async m => { const p = await m.save(Product, { name: dto.name.trim(), slug, shortDescription: dto.shortDescription?.trim() ?? null, active: dto.active ?? true, featured: dto.featured ?? false, sortOrder: dto.sortOrder ?? 0 }); await this.audit(m, adminId, 'PRODUCT_CREATED', 'PRODUCT', p.id); return p; }), 'PRODUCT_SLUG_CONFLICT'); }
-  async updateProduct(id: string, dto: ProductPatchDto, adminId: string) { return this.unique(() => this.dataSource.transaction(async m => { const p = await m.findOneBy(Product, { id }); if (!p) throw notFound('PRODUCT_NOT_FOUND', 'El producto no existe.'); const wasActive = p.active; if (dto.slug !== undefined) { const slug = slugify(dto.slug); if (!slug) throw new DomainError('INVALID_SLUG', 'Slug inválido.', undefined, 400); p.slug = slug; } if (dto.name !== undefined) p.name = dto.name.trim(); if (dto.shortDescription !== undefined) p.shortDescription = dto.shortDescription?.trim() || null; if (dto.active !== undefined) p.active = dto.active; if (dto.featured !== undefined) p.featured = dto.featured; if (dto.sortOrder !== undefined) p.sortOrder = dto.sortOrder; await m.save(p); await this.audit(m, adminId, dto.active !== undefined && dto.active !== wasActive ? (dto.active ? 'PRODUCT_ACTIVATED' : 'PRODUCT_DEACTIVATED') : 'PRODUCT_UPDATED', 'PRODUCT', p.id); return p; }), 'PRODUCT_SLUG_CONFLICT'); }
-  async createVariant(productId: string, dto: VariantDto, adminId: string) { return this.unique(() => this.dataSource.transaction(async m => { if (!await m.existsBy(Product, { id: productId })) throw notFound('PRODUCT_NOT_FOUND', 'El producto no existe.'); const v = await m.save(ProductVariant, { productId, sku: dto.sku.trim().toUpperCase(), name: dto.name.trim(), color: dto.color?.trim() || null, size: dto.size?.trim() || null, priceInCents: dto.priceInCents, active: dto.active ?? true, sortOrder: dto.sortOrder ?? 0, lowStockThreshold: dto.lowStockThreshold ?? null }); await this.audit(m, adminId, 'VARIANT_CREATED', 'VARIANT', v.id); return v; }), 'SKU_ALREADY_EXISTS'); }
-  async variant(id: string) { const v = await this.dataSource.getRepository(ProductVariant).findOneBy({ id }); if (!v) throw notFound('VARIANT_NOT_FOUND', 'La variante no existe.'); return v; }
-  async updateVariant(id: string, dto: VariantPatchDto, adminId: string) { return this.unique(() => this.dataSource.transaction(async m => { const v = await m.findOneBy(ProductVariant, { id }); if (!v) throw notFound('VARIANT_NOT_FOUND', 'La variante no existe.'); const wasActive = v.active; Object.assign(v, { ...(dto.name !== undefined ? { name: dto.name.trim() } : {}), ...(dto.sku !== undefined ? { sku: dto.sku.trim().toUpperCase() } : {}), ...(dto.color !== undefined ? { color: dto.color?.trim() || null } : {}), ...(dto.size !== undefined ? { size: dto.size?.trim() || null } : {}), ...(dto.priceInCents !== undefined ? { priceInCents: dto.priceInCents } : {}), ...(dto.active !== undefined ? { active: dto.active } : {}), ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}), ...(dto.lowStockThreshold !== undefined ? { lowStockThreshold: dto.lowStockThreshold } : {}) }); await m.save(v); await this.audit(m, adminId, dto.active !== undefined && dto.active !== wasActive ? (dto.active ? 'VARIANT_ACTIVATED' : 'VARIANT_DEACTIVATED') : 'VARIANT_UPDATED', 'VARIANT', v.id); return v; }), 'SKU_ALREADY_EXISTS'); }
-  async addMedia(productId: string, dto: MediaDto, adminId: string) { return this.dataSource.transaction(async m => { if (!await m.existsBy(Product, { id: productId })) throw notFound('PRODUCT_NOT_FOUND', 'El producto no existe.'); if (dto.isCover) await m.update(ProductMedia, { productId }, { isCover: false }); const media = await m.save(ProductMedia, { productId, url: dto.url, alt: dto.alt.trim(), sortOrder: dto.sortOrder ?? 0, isCover: dto.isCover ?? false }); await this.audit(m, adminId, 'PRODUCT_MEDIA_CREATED', 'PRODUCT_MEDIA', media.id); return media; }); }
-  async updateMedia(id: string, dto: MediaPatchDto, adminId: string) { return this.dataSource.transaction(async m => { const media = await m.findOneBy(ProductMedia, { id }); if (!media) throw notFound('PRODUCT_MEDIA_NOT_FOUND', 'El recurso no existe.'); if (dto.isCover) await m.update(ProductMedia, { productId: media.productId }, { isCover: false }); Object.assign(media, { ...(dto.url !== undefined ? { url: dto.url } : {}), ...(dto.alt !== undefined ? { alt: dto.alt.trim() } : {}), ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}), ...(dto.isCover !== undefined ? { isCover: dto.isCover } : {}) }); await m.save(media); await this.audit(m, adminId, 'PRODUCT_MEDIA_UPDATED', 'PRODUCT_MEDIA', media.id); return media; }); }
-  async removeMedia(id: string, adminId: string) { return this.dataSource.transaction(async m => { const media = await m.findOneBy(ProductMedia, { id }); if (!media) throw notFound('PRODUCT_MEDIA_NOT_FOUND', 'El recurso no existe.'); await m.remove(media); await this.audit(m, adminId, 'PRODUCT_MEDIA_DELETED', 'PRODUCT_MEDIA', id); }); }
+  private audit(
+    manager: ReturnType<DataSource["createEntityManager"]>,
+    adminUserId: string,
+    action: string,
+    type: string,
+    id: string,
+  ) {
+    return manager.save(AdminAuditLog, {
+      adminUserId,
+      action,
+      entityType: type,
+      entityId: id,
+      metadata: null,
+    });
+  }
+  private async unique<T>(fn: () => Promise<T>, code: string) {
+    try {
+      return await fn();
+    } catch (e) {
+      if (
+        e instanceof QueryFailedError &&
+        (e as { code?: string }).code === "23505"
+      )
+        throw new DomainError(
+          code,
+          code === "PRODUCT_SLUG_CONFLICT"
+            ? "El slug ya existe."
+            : "El SKU ya existe.",
+        );
+      throw e;
+    }
+  }
+  async list(query: ProductListDto) {
+    const page = query.page ?? 1,
+      pageSize = query.pageSize ?? 20;
+    const base = this.dataSource
+      .getRepository(Product)
+      .createQueryBuilder("product");
+    if (query.search)
+      base.andWhere(
+        "(product.name ILIKE :search OR product.slug ILIKE :search)",
+        { search: `%${query.search.trim()}%` },
+      );
+    if (query.active !== undefined)
+      base.andWhere("product.active = :active", { active: query.active });
+    const fields: Record<string, string> = {
+      name: "product.name",
+      createdAt: "product.createdAt",
+      sortOrder: "product.sortOrder",
+    };
+    const [field, dir] = (query.sort ?? "sortOrder:asc").split(":");
+    const direction = dir?.toUpperCase() === "DESC" ? "DESC" : "ASC";
+    const total = await base.clone().getCount();
+    const rows = await base
+      .clone()
+      .select("product.id", "id")
+      .orderBy(fields[field] ?? fields.sortOrder, direction)
+      .addOrderBy("product.name", "ASC")
+      .addOrderBy("product.id", "ASC")
+      .skip((page - 1) * pageSize)
+      .take(pageSize)
+      .getRawMany<{ id: string }>();
+    const ids = rows.map((row) => row.id);
+    const products = ids.length
+      ? await this.dataSource
+          .getRepository(Product)
+          .find({
+            where: { id: In(ids) },
+            relations: { variants: true, media: true },
+          })
+      : [];
+    const byId = new Map(products.map((product) => [product.id, product]));
+    return {
+      items: ids.map((id) => byId.get(id)!).filter(Boolean),
+      page,
+      pageSize,
+      total,
+    };
+  }
+  async product(id: string) {
+    const p = await this.dataSource
+      .getRepository(Product)
+      .findOne({ where: { id }, relations: { variants: true, media: true } });
+    if (!p) throw notFound("PRODUCT_NOT_FOUND", "El producto no existe.");
+    return p;
+  }
+  async createProduct(dto: ProductDto, adminId: string) {
+    const slug = slugify(dto.slug);
+    if (!slug)
+      throw new DomainError("INVALID_SLUG", "Slug inválido.", undefined, 400);
+    return this.unique(
+      () =>
+        this.dataSource.transaction(async (m) => {
+          const p = await m.save(Product, {
+            name: dto.name.trim(),
+            slug,
+            shortDescription: dto.shortDescription?.trim() ?? null,
+            active: dto.active ?? true,
+            featured: dto.featured ?? false,
+            sortOrder: dto.sortOrder ?? 0,
+          });
+          await this.audit(m, adminId, "PRODUCT_CREATED", "PRODUCT", p.id);
+          return p;
+        }),
+      "PRODUCT_SLUG_CONFLICT",
+    );
+  }
+  async updateProduct(id: string, dto: ProductPatchDto, adminId: string) {
+    return this.unique(
+      () =>
+        this.dataSource.transaction(async (m) => {
+          const p = await m.findOneBy(Product, { id });
+          if (!p) throw notFound("PRODUCT_NOT_FOUND", "El producto no existe.");
+          const wasActive = p.active;
+          if (dto.slug !== undefined) {
+            const slug = slugify(dto.slug);
+            if (!slug)
+              throw new DomainError(
+                "INVALID_SLUG",
+                "Slug inválido.",
+                undefined,
+                400,
+              );
+            p.slug = slug;
+          }
+          if (dto.name !== undefined) p.name = dto.name.trim();
+          if (dto.shortDescription !== undefined)
+            p.shortDescription = dto.shortDescription?.trim() || null;
+          if (dto.active !== undefined) p.active = dto.active;
+          if (dto.featured !== undefined) p.featured = dto.featured;
+          if (dto.sortOrder !== undefined) p.sortOrder = dto.sortOrder;
+          await m.save(p);
+          await this.audit(
+            m,
+            adminId,
+            dto.active !== undefined && dto.active !== wasActive
+              ? dto.active
+                ? "PRODUCT_ACTIVATED"
+                : "PRODUCT_DEACTIVATED"
+              : "PRODUCT_UPDATED",
+            "PRODUCT",
+            p.id,
+          );
+          return p;
+        }),
+      "PRODUCT_SLUG_CONFLICT",
+    );
+  }
+  async createVariant(productId: string, dto: VariantDto, adminId: string) {
+    return this.unique(
+      () =>
+        this.dataSource.transaction(async (m) => {
+          if (!(await m.existsBy(Product, { id: productId })))
+            throw notFound("PRODUCT_NOT_FOUND", "El producto no existe.");
+          const v = await m.save(ProductVariant, {
+            productId,
+            sku: dto.sku.trim().toUpperCase(),
+            name: dto.name.trim(),
+            color: dto.color?.trim() || null,
+            size: dto.size?.trim() || null,
+            priceInCents: dto.priceInCents,
+            active: dto.active ?? true,
+            sortOrder: dto.sortOrder ?? 0,
+            lowStockThreshold: dto.lowStockThreshold ?? null,
+          });
+          await this.audit(m, adminId, "VARIANT_CREATED", "VARIANT", v.id);
+          return v;
+        }),
+      "SKU_ALREADY_EXISTS",
+    );
+  }
+  async variant(id: string) {
+    const v = await this.dataSource
+      .getRepository(ProductVariant)
+      .findOneBy({ id });
+    if (!v) throw notFound("VARIANT_NOT_FOUND", "La variante no existe.");
+    return v;
+  }
+  async updateVariant(id: string, dto: VariantPatchDto, adminId: string) {
+    return this.unique(
+      () =>
+        this.dataSource.transaction(async (m) => {
+          const v = await m.findOneBy(ProductVariant, { id });
+          if (!v) throw notFound("VARIANT_NOT_FOUND", "La variante no existe.");
+          const wasActive = v.active;
+          Object.assign(v, {
+            ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
+            ...(dto.sku !== undefined
+              ? { sku: dto.sku.trim().toUpperCase() }
+              : {}),
+            ...(dto.color !== undefined
+              ? { color: dto.color?.trim() || null }
+              : {}),
+            ...(dto.size !== undefined
+              ? { size: dto.size?.trim() || null }
+              : {}),
+            ...(dto.priceInCents !== undefined
+              ? { priceInCents: dto.priceInCents }
+              : {}),
+            ...(dto.active !== undefined ? { active: dto.active } : {}),
+            ...(dto.sortOrder !== undefined
+              ? { sortOrder: dto.sortOrder }
+              : {}),
+            ...(dto.lowStockThreshold !== undefined
+              ? { lowStockThreshold: dto.lowStockThreshold }
+              : {}),
+          });
+          await m.save(v);
+          await this.audit(
+            m,
+            adminId,
+            dto.active !== undefined && dto.active !== wasActive
+              ? dto.active
+                ? "VARIANT_ACTIVATED"
+                : "VARIANT_DEACTIVATED"
+              : "VARIANT_UPDATED",
+            "VARIANT",
+            v.id,
+          );
+          return v;
+        }),
+      "SKU_ALREADY_EXISTS",
+    );
+  }
+  async addMedia(productId: string, dto: MediaDto, adminId: string) {
+    return this.dataSource.transaction(async (m) => {
+      if (!(await m.existsBy(Product, { id: productId })))
+        throw notFound("PRODUCT_NOT_FOUND", "El producto no existe.");
+      if (dto.isCover)
+        await m.update(ProductMedia, { productId }, { isCover: false });
+      const media = await m.save(ProductMedia, {
+        productId,
+        url: dto.url,
+        alt: dto.alt.trim(),
+        sortOrder: dto.sortOrder ?? 0,
+        isCover: dto.isCover ?? false,
+      });
+      await this.audit(
+        m,
+        adminId,
+        "PRODUCT_MEDIA_CREATED",
+        "PRODUCT_MEDIA",
+        media.id,
+      );
+      return media;
+    });
+  }
+  async updateMedia(id: string, dto: MediaPatchDto, adminId: string) {
+    return this.dataSource.transaction(async (m) => {
+      const media = await m.findOneBy(ProductMedia, { id });
+      if (!media)
+        throw notFound("PRODUCT_MEDIA_NOT_FOUND", "El recurso no existe.");
+      if (dto.isCover)
+        await m.update(
+          ProductMedia,
+          { productId: media.productId },
+          { isCover: false },
+        );
+      Object.assign(media, {
+        ...(dto.url !== undefined ? { url: dto.url } : {}),
+        ...(dto.alt !== undefined ? { alt: dto.alt.trim() } : {}),
+        ...(dto.sortOrder !== undefined ? { sortOrder: dto.sortOrder } : {}),
+        ...(dto.isCover !== undefined ? { isCover: dto.isCover } : {}),
+      });
+      await m.save(media);
+      await this.audit(
+        m,
+        adminId,
+        "PRODUCT_MEDIA_UPDATED",
+        "PRODUCT_MEDIA",
+        media.id,
+      );
+      return media;
+    });
+  }
+  async removeMedia(id: string, adminId: string) {
+    return this.dataSource.transaction(async (m) => {
+      const media = await m.findOneBy(ProductMedia, { id });
+      if (!media)
+        throw notFound("PRODUCT_MEDIA_NOT_FOUND", "El recurso no existe.");
+      await m.remove(media);
+      await this.audit(
+        m,
+        adminId,
+        "PRODUCT_MEDIA_DELETED",
+        "PRODUCT_MEDIA",
+        id,
+      );
+    });
+  }
 }
