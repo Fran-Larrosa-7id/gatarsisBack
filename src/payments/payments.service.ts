@@ -237,7 +237,15 @@ export class PaymentsService {
         xRequestId: input.headers["x-request-id"],
         dataId,
       });
+      this.trace("webhook_signature_valid", {
+        providerPaymentId: Array.isArray(dataId) ? dataId[0] : (dataId ?? null),
+        processingResult: "SIGNATURE_VALID",
+      });
     } catch {
+      this.trace("webhook_immediate_processing_skipped", {
+        providerPaymentId: Array.isArray(dataId) ? dataId[0] : (dataId ?? null),
+        processingResult: "INVALID_SIGNATURE",
+      });
       throw new DomainError(
         "INVALID_WEBHOOK_SIGNATURE",
         "La firma del webhook es inválida.",
@@ -248,7 +256,7 @@ export class PaymentsService {
     const type = String(input.body.type ?? input.body.topic ?? "");
     const providerPaymentId = Array.isArray(dataId) ? dataId[0] : dataId;
     if (type !== "payment" || !providerPaymentId) {
-      this.trace("webhook_ignored", {
+      this.trace("webhook_immediate_processing_skipped", {
         providerPaymentId: providerPaymentId ?? null,
         processingResult: "IGNORED_NON_PAYMENT_OR_MISSING_ID",
       });
@@ -256,10 +264,10 @@ export class PaymentsService {
     }
     const eventId = input.body.id ? String(input.body.id) : null;
     let webhookEventId: string | null = null;
+    const events = this.dataSource.getRepository(WebhookEvent);
     try {
-      const inserted = await this.dataSource
-        .getRepository(WebhookEvent)
-        .insert({
+      const created = await events.save(
+        events.create({
           provider: "mercado_pago",
           providerEventId: eventId,
           providerResourceId: providerPaymentId,
@@ -275,44 +283,81 @@ export class PaymentsService {
           payload: input.body as any,
           receivedAt: new Date(),
           processedAt: null,
-        });
-      webhookEventId = String(inserted.identifiers[0]?.id ?? "") || null;
-      this.trace("webhook_inbox_inserted", {
+        }),
+      );
+      webhookEventId = created.id;
+      this.trace("webhook_inbox_created", {
         providerPaymentId,
         webhookEventId,
         processingResult: "PENDING",
       });
     } catch (error: unknown) {
-      if (!String((error as { code?: string }).code).includes("23505"))
+      if (!String((error as { code?: string }).code).includes("23505")) {
+        this.trace("webhook_immediate_processing_failed", {
+          providerPaymentId,
+          processingResult: `INBOX_PERSIST_${this.errorCode(error)}`,
+        });
         throw error;
+      }
       const existing = eventId
-        ? await this.dataSource.getRepository(WebhookEvent).findOneBy({
+        ? await events.findOneBy({
             provider: "mercado_pago",
             providerEventId: eventId,
           })
         : null;
+      this.trace("webhook_inbox_existing", {
+        providerPaymentId,
+        webhookEventId: existing?.id ?? null,
+        processingResult: existing?.status ?? "DUPLICATE_NOT_FOUND",
+      });
       if (existing && existing.status !== WebhookEventStatus.PROCESSED) {
-        await this.dataSource.getRepository(WebhookEvent).update(existing.id, {
+        await events.update(existing.id, {
           status: WebhookEventStatus.PENDING,
           attempts: 0,
           nextAttemptAt: null,
           lastError: null,
         });
         webhookEventId = existing.id;
-        this.trace("webhook_duplicate_requeued", {
+        this.trace("webhook_requeued", {
           providerPaymentId,
           webhookEventId,
           processingResult: "PENDING",
         });
       } else {
-        this.trace("webhook_duplicate_ignored", {
+        this.trace("webhook_immediate_processing_skipped", {
           providerPaymentId,
           webhookEventId: existing?.id ?? null,
-          processingResult: "ALREADY_PROCESSED",
+          processingResult: existing ? "ALREADY_PROCESSED" : "DUPLICATE_EVENT_NOT_FOUND",
         });
       }
     }
-    if (webhookEventId) await this.processWebhookEvent(webhookEventId);
+    if (!webhookEventId) {
+      this.trace("webhook_immediate_processing_skipped", {
+        providerPaymentId,
+        processingResult: "NO_INBOX_EVENT_ID",
+      });
+      return { received: true };
+    }
+    this.trace("webhook_immediate_processing_started", {
+      providerPaymentId,
+      webhookEventId,
+    });
+    try {
+      const result = await this.processWebhookEvent(webhookEventId);
+      const trace = result === "FAILED" ? "webhook_immediate_processing_failed" : "webhook_immediate_processing_finished";
+      this.trace(trace, {
+        providerPaymentId,
+        webhookEventId,
+        processingResult: result,
+      });
+    } catch (error) {
+      this.trace("webhook_immediate_processing_failed", {
+        providerPaymentId,
+        webhookEventId,
+        processingResult: this.errorCode(error),
+      });
+      throw error;
+    }
     return { received: true };
   }
 
@@ -343,7 +388,7 @@ export class PaymentsService {
         providerPaymentId: event?.providerResourceId ?? null,
         processingResult: event ? "ALREADY_PROCESSED" : "NOT_FOUND",
       });
-      return;
+      return "SKIPPED";
     }
     try {
       this.trace("webhook_gateway_get_payment_started", {
@@ -371,6 +416,7 @@ export class PaymentsService {
         orderId: remote.external_reference ?? null,
         processingResult: "PROCESSED",
       });
+      return "PROCESSED";
     } catch (error) {
       const attempts = event.attempts + 1;
       await this.dataSource
@@ -398,6 +444,7 @@ export class PaymentsService {
           attempts >= 4 ? WebhookEventStatus.DEAD_LETTER : WebhookEventStatus.RETRY,
         errorCode: this.errorCode(error),
       });
+      return "FAILED";
     }
   }
 

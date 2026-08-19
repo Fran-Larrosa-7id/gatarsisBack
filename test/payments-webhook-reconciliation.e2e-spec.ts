@@ -10,6 +10,7 @@ import { PaymentPreference, PaymentPreferenceStatus } from "../src/payments/enti
 import { Payment, PaymentProcessingStatus } from "../src/payments/entities/payment.entity";
 import { MERCADO_PAGO_GATEWAY, MercadoPagoPayment } from "../src/payments/mercado-pago.gateway";
 import { PaymentsService } from "../src/payments/payments.service";
+import { WebhookEvent, WebhookEventStatus } from "../src/payments/entities/webhook-event.entity";
 import { Product } from "../src/products/entities/product.entity";
 import { ProductVariant } from "../src/products/entities/product-variant.entity";
 
@@ -79,6 +80,9 @@ describe("payments webhook and early reconciliation (PostgreSQL)", () => {
     const { order, v } = await reservedOrder(); const payment = approved(order.id, "174643820870"); remoteById.set(payment.id, payment);
     await request(app.getHttpServer()).post(`/api/v1/webhooks/mercado-pago?data.id=${payment.id}`).set("x-signature", "test").set("x-request-id", "request-1").send({ id: "event-1", type: "payment", action: "payment.updated" }).expect(200);
     await expectSale(order.id, v.id);
+    expect(getPayment).toHaveBeenCalledTimes(1);
+    expect(await ds.getRepository(Payment).findOneBy({ provider: "mercado_pago", providerPaymentId: payment.id })).toEqual(expect.objectContaining({ processingStatus: PaymentProcessingStatus.APPLIED }));
+    expect(await ds.getRepository(WebhookEvent).findOneByOrFail({ providerEventId: "event-1" })).toEqual(expect.objectContaining({ status: WebhookEventStatus.PROCESSED }));
   });
 
   it("converges an approved payment through early reconciliation when webhook processing did not converge", async () => {
