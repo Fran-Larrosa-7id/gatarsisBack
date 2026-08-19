@@ -37,6 +37,7 @@ export class VariantDto {
   @IsOptional() @Type(() => Number) @IsInt() @Min(0) lowStockThreshold?:
     | number
     | null;
+  @IsOptional() @Type(() => Number) @IsInt() @Min(0) initialStock?: number;
 }
 export class VariantPatchDto {
   @IsOptional() @IsString() @MinLength(1) sku?: string;

@@ -4,6 +4,11 @@ import { DomainError } from "../common/domain-error";
 import { Product } from "../products/entities/product.entity";
 import { ProductVariant } from "../products/entities/product-variant.entity";
 import { ProductMedia } from "../products/entities/product-media.entity";
+import { Inventory } from "../inventory/entities/inventory.entity";
+import {
+  InventoryMovement,
+  InventoryMovementType,
+} from "../inventory/entities/inventory-movement.entity";
 import { AdminAuditLog } from "./entities/admin-audit-log.entity";
 import {
   ProductDto,
@@ -195,6 +200,21 @@ export class AdminProductsService {
             sortOrder: dto.sortOrder ?? 0,
             lowStockThreshold: dto.lowStockThreshold ?? null,
           });
+          const initialStock = dto.initialStock ?? 0;
+          await m.save(Inventory, {
+            variantId: v.id,
+            stockOnHand: initialStock,
+            reservedStock: 0,
+          });
+          if (initialStock > 0)
+            await m.save(InventoryMovement, {
+              variantId: v.id,
+              orderId: null,
+              type: InventoryMovementType.RESTOCK,
+              onHandDelta: initialStock,
+              reservedDelta: 0,
+              reason: "Initial stock",
+            });
           await this.audit(m, adminId, "VARIANT_CREATED", "VARIANT", v.id);
           return v;
         }),
