@@ -1,5 +1,6 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import {
+  InvalidWebhookSignatureError,
   MercadoPagoConfig,
   Payment,
   Preference,
@@ -8,6 +9,7 @@ import {
 import { mercadoPagoConfig } from "../config/database.config";
 
 export const MERCADO_PAGO_GATEWAY = Symbol("MERCADO_PAGO_GATEWAY");
+const MERCADO_PAGO_SDK_VERSION = require("mercadopago/package.json").version as string;
 export type MercadoPagoPayment = {
   id: string;
   status: string;
@@ -44,6 +46,7 @@ export interface MercadoPagoGatewayContract {
 }
 @Injectable()
 export class MercadoPagoGateway implements MercadoPagoGatewayContract {
+  private readonly logger = new Logger(MercadoPagoGateway.name);
   private readonly config = mercadoPagoConfig();
   private readonly client = new MercadoPagoConfig({
     accessToken: this.config.accessToken,
@@ -132,12 +135,56 @@ export class MercadoPagoGateway implements MercadoPagoGatewayContract {
   }): void {
     if (!this.config.enabled || !this.config.webhookSecret)
       throw new Error("Mercado Pago webhook is not configured");
-    WebhookSignatureValidator.validate({
-      xSignature: input.xSignature,
-      xRequestId: input.xRequestId,
-      dataId: input.dataId,
-      secret: this.config.webhookSecret,
-      toleranceSeconds: 300,
-    });
+    const value = (inputValue: string | string[] | undefined) => {
+      const raw = Array.isArray(inputValue) ? inputValue[0] : inputValue;
+      return raw === undefined ? undefined : String(raw);
+    };
+    const rawSignature = value(input.xSignature);
+    const rawRequestId = value(input.xRequestId);
+    const rawDataId = value(input.dataId);
+    const parsed = new Map<string, string>();
+    for (const part of rawSignature?.split(",") ?? []) {
+      const equalsAt = part.indexOf("=");
+      if (equalsAt >= 0) parsed.set(part.slice(0, equalsAt).trim().toLowerCase(), part.slice(equalsAt + 1).trim());
+    }
+    const ts = parsed.get("ts") || null;
+    const v1 = parsed.get("v1") || null;
+    const dataId = rawDataId?.trim() || null;
+    const requestId = rawRequestId?.trim() || null;
+    const manifest = ts ? [dataId ? `id:${dataId}` : null, requestId ? `request-id:${requestId}` : null, `ts:${ts}`].filter(Boolean).join(";") + ";" : null;
+    const diagnostics = {
+      sdkVersion: MERCADO_PAGO_SDK_VERSION,
+      tsReceived: ts,
+      v1Present: Boolean(v1),
+      v1Length: v1?.length ?? 0,
+      xRequestId: requestId,
+      dataId,
+      canonicalManifest: manifest,
+      xSignatureTrimmed: rawSignature !== (rawSignature?.trim() ?? undefined),
+      xRequestIdTrimmed: rawRequestId !== (rawRequestId?.trim() ?? undefined),
+      dataIdTrimmed: rawDataId !== (rawDataId?.trim() ?? undefined),
+      webhookSecretConfigured: Boolean(this.config.webhookSecret),
+      webhookSecretLength: this.config.webhookSecret.length,
+      webhookSecretHasEdgeWhitespace: this.config.webhookSecret !== this.config.webhookSecret.trim(),
+    };
+    this.logger.log({ step: "webhook_signature_validation_input", ...diagnostics });
+    try {
+      WebhookSignatureValidator.validate({
+        xSignature: input.xSignature,
+        xRequestId: input.xRequestId,
+        dataId: input.dataId,
+        secret: this.config.webhookSecret,
+        toleranceSeconds: 300,
+      });
+      this.logger.log({ step: "webhook_signature_validation_result", validationResult: "VALID", ...diagnostics });
+    } catch (error) {
+      this.logger.warn({
+        step: "webhook_signature_validation_result",
+        validationResult: "INVALID",
+        failureReason: error instanceof InvalidWebhookSignatureError ? error.reason : (error instanceof Error ? error.name : "UNKNOWN_ERROR"),
+        ...diagnostics,
+      });
+      throw error;
+    }
   }
 }

@@ -225,10 +225,17 @@ export class PaymentsService {
     body: Record<string, unknown>;
   }) {
     const dataId = input.query["data.id"];
+    const bodyDataId = typeof input.body.data === "object" && input.body.data && "id" in input.body.data
+      ? String((input.body.data as { id?: unknown }).id ?? "") || null
+      : null;
+    const queryDataId = Array.isArray(dataId) ? dataId[0] : (dataId ?? null);
     this.logger.log({
       hasXSignature: Boolean(input.headers["x-signature"]),
       hasXRequestId: Boolean(input.headers["x-request-id"]),
-      dataId: dataId ?? null,
+      dataId: queryDataId,
+      bodyDataId,
+      dataIdSource: "query.data.id",
+      queryAndBodyDataIdMatch: bodyDataId === null ? null : bodyDataId === queryDataId,
       webhookSecretConfigured: Boolean(this.config.webhookSecret),
     });
     try {
