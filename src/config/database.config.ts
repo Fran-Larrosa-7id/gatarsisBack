@@ -23,6 +23,7 @@ import { RefundOperation } from "../payments/entities/refund-operation.entity";
 import { RefundOperations1766880000000 } from "../database/migrations/1766880000000-RefundOperations";
 import { VariantMedia1766966400000 } from "../database/migrations/1766966400000-VariantMedia";
 import { EarlyPaymentReconciliation1767052800000 } from "../database/migrations/1767052800000-EarlyPaymentReconciliation";
+import { VariantAttributes1767139200000 } from "../database/migrations/1767139200000-VariantAttributes";
 
 const numberFromEnv = (name: string, fallback: number): number => {
   const value = Number(process.env[name] ?? fallback);
@@ -80,6 +81,7 @@ export const databaseConfig = (): TypeOrmModuleOptions => ({
     RefundOperations1766880000000,
     VariantMedia1766966400000,
     EarlyPaymentReconciliation1767052800000,
+    VariantAttributes1767139200000,
   ],
 });
 

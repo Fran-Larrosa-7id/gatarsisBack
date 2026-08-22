@@ -2,6 +2,7 @@ import { Transform, Type } from "class-transformer";
 import {
   IsBoolean,
   IsInt,
+  IsObject,
   IsOptional,
   IsString,
   IsUrl,
@@ -31,6 +32,7 @@ export class VariantDto {
   @IsString() @MinLength(1) name!: string;
   @IsOptional() @IsString() color?: string | null;
   @IsOptional() @IsString() size?: string | null;
+  @IsOptional() @IsObject() attributes?: Record<string, string>;
   @Type(() => Number) @IsInt() @Min(1) priceInCents!: number;
   @IsOptional() @IsBoolean() active?: boolean;
   @IsOptional() @Type(() => Number) @IsInt() sortOrder?: number;
@@ -44,6 +46,7 @@ export class VariantPatchDto {
   @IsOptional() @IsString() @MinLength(1) name?: string;
   @IsOptional() @IsString() color?: string | null;
   @IsOptional() @IsString() size?: string | null;
+  @IsOptional() @IsObject() attributes?: Record<string, string>;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) priceInCents?: number;
   @IsOptional() @IsBoolean() active?: boolean;
   @IsOptional() @Type(() => Number) @IsInt() sortOrder?: number;

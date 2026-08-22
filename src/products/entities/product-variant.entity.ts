@@ -24,6 +24,7 @@ export class ProductVariant {
   @Column() name!: string;
   @Column({ type: "varchar", nullable: true }) color!: string | null;
   @Column({ type: "varchar", nullable: true }) size!: string | null;
+  @Column({ type: "jsonb", default: () => "'{}'" }) attributes!: Record<string, string>;
   @Column({ name: "price_in_cents", type: "integer" }) priceInCents!: number;
   @Column({ default: true }) active!: boolean;
   @Column({ name: 'sort_order', type: 'integer', default: 0 }) sortOrder!: number;

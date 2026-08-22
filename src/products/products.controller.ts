@@ -43,7 +43,9 @@ export class ProductsController {
         name: variant.name,
         color: variant.color,
         size: variant.size,
+        attributes: variant.attributes ?? {},
         priceInCents: variant.priceInCents,
+        active: variant.active,
         media: (product.media ?? [])
           .filter((media) => media.variantId === variant.id)
           .sort((a, b) => a.sortOrder - b.sortOrder)

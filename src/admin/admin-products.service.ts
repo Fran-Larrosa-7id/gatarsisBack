@@ -4,6 +4,11 @@ import { DomainError } from "../common/domain-error";
 import { Product } from "../products/entities/product.entity";
 import { ProductVariant } from "../products/entities/product-variant.entity";
 import { ProductMedia } from "../products/entities/product-media.entity";
+import {
+  attributesFingerprint,
+  normalizeVariantAttributes,
+  VariantAttributes,
+} from "../products/variant-attributes";
 import { Inventory } from "../inventory/entities/inventory.entity";
 import {
   InventoryMovement,
@@ -62,6 +67,43 @@ export class AdminProductsService {
         );
       throw e;
     }
+  }
+  private attributes(input: unknown): VariantAttributes {
+    try {
+      return normalizeVariantAttributes(input);
+    } catch (error) {
+      throw new DomainError(
+        "INVALID_VARIANT_ATTRIBUTES",
+        "Los atributos deben ser un objeto plano de strings no vacíos.",
+        { reason: error instanceof Error ? error.message : "UNKNOWN" },
+        400,
+      );
+    }
+  }
+  private async assertUniqueActiveAttributes(
+    manager: ReturnType<DataSource["createEntityManager"]>,
+    productId: string,
+    attributes: VariantAttributes,
+    active: boolean,
+    excludeVariantId?: string,
+  ) {
+    const fingerprint = attributesFingerprint(attributes);
+    if (!active || !fingerprint) return;
+    const variants = await manager.findBy(ProductVariant, {
+      productId,
+      active: true,
+    });
+    const duplicate = variants.find(
+      (variant) =>
+        variant.id !== excludeVariantId &&
+        attributesFingerprint(this.attributes(variant.attributes ?? {})) ===
+          fingerprint,
+    );
+    if (duplicate)
+      throw new DomainError(
+        "VARIANT_ATTRIBUTE_COMBINATION_CONFLICT",
+        "Ya existe una variante activa con la misma combinación de atributos.",
+      );
   }
   async list(query: ProductListDto) {
     const page = query.page ?? 1,
@@ -189,12 +231,27 @@ export class AdminProductsService {
         this.dataSource.transaction(async (m) => {
           if (!(await m.existsBy(Product, { id: productId })))
             throw notFound("PRODUCT_NOT_FOUND", "El producto no existe.");
+          const attributes =
+            dto.attributes === undefined ? {} : this.attributes(dto.attributes);
+          await this.assertUniqueActiveAttributes(
+            m,
+            productId,
+            attributes,
+            dto.active ?? true,
+          );
           const v = await m.save(ProductVariant, {
             productId,
             sku: dto.sku.trim().toUpperCase(),
             name: dto.name.trim(),
-            color: dto.color?.trim() || null,
-            size: dto.size?.trim() || null,
+            color:
+              dto.attributes === undefined
+                ? dto.color?.trim() || null
+                : (attributes.color ?? null),
+            size:
+              dto.attributes === undefined
+                ? dto.size?.trim() || null
+                : (attributes.size ?? null),
+            attributes,
             priceInCents: dto.priceInCents,
             active: dto.active ?? true,
             sortOrder: dto.sortOrder ?? 0,
@@ -235,16 +292,45 @@ export class AdminProductsService {
           const v = await m.findOneBy(ProductVariant, { id });
           if (!v) throw notFound("VARIANT_NOT_FOUND", "La variante no existe.");
           const wasActive = v.active;
+          const attributes =
+            dto.attributes !== undefined
+              ? this.attributes(dto.attributes)
+              : this.attributes(v.attributes ?? {});
+          if (dto.attributes === undefined) {
+            if (dto.color !== undefined) {
+              const color = dto.color?.trim() || null;
+              if (color) attributes.color = color;
+              else delete attributes.color;
+            }
+            if (dto.size !== undefined) {
+              const size = dto.size?.trim() || null;
+              if (size) attributes.size = size;
+              else delete attributes.size;
+            }
+          }
+          const normalizedAttributes = this.attributes(attributes);
+          const usesStructuredAttributes =
+            dto.attributes !== undefined ||
+            dto.color !== undefined ||
+            dto.size !== undefined;
+          await this.assertUniqueActiveAttributes(
+            m,
+            v.productId,
+            normalizedAttributes,
+            dto.active ?? v.active,
+            v.id,
+          );
           Object.assign(v, {
             ...(dto.name !== undefined ? { name: dto.name.trim() } : {}),
             ...(dto.sku !== undefined
               ? { sku: dto.sku.trim().toUpperCase() }
               : {}),
-            ...(dto.color !== undefined
-              ? { color: dto.color?.trim() || null }
-              : {}),
-            ...(dto.size !== undefined
-              ? { size: dto.size?.trim() || null }
+            ...(usesStructuredAttributes
+              ? {
+                  color: normalizedAttributes.color ?? null,
+                  size: normalizedAttributes.size ?? null,
+                  attributes: normalizedAttributes,
+                }
               : {}),
             ...(dto.priceInCents !== undefined
               ? { priceInCents: dto.priceInCents }
