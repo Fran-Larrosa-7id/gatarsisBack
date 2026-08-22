@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from "@nestjs/common";
-import { DataSource, ILike, In, QueryFailedError } from "typeorm";
+import { DataSource, EntityManager, In, QueryFailedError } from "typeorm";
 import { DomainError } from "../common/domain-error";
 import { Product } from "../products/entities/product.entity";
 import { ProductVariant } from "../products/entities/product-variant.entity";
@@ -14,6 +14,7 @@ import {
   InventoryMovement,
   InventoryMovementType,
 } from "../inventory/entities/inventory-movement.entity";
+import { OrderItem } from "../orders/entities/order-item.entity";
 import { AdminAuditLog } from "./entities/admin-audit-log.entity";
 import {
   ProductDto,
@@ -224,6 +225,113 @@ export class AdminProductsService {
         }),
       "PRODUCT_SLUG_CONFLICT",
     );
+  }
+  private async variantHasHistory(manager: EntityManager, variantId: string) {
+    const [hasOrderItems, hasMovements, inventory] = await Promise.all([
+      manager.existsBy(OrderItem, { variantId }),
+      manager.existsBy(InventoryMovement, { variantId }),
+      manager.findOneBy(Inventory, { variantId }),
+    ]);
+    return hasOrderItems || hasMovements || (inventory?.reservedStock ?? 0) > 0;
+  }
+  private async deactivateProductWithoutActiveVariants(
+    manager: EntityManager,
+    product: Product,
+    adminId: string,
+  ) {
+    if (
+      product.active &&
+      !(await manager.existsBy(ProductVariant, {
+        productId: product.id,
+        active: true,
+      }))
+    ) {
+      product.active = false;
+      await manager.save(product);
+      await this.audit(
+        manager,
+        adminId,
+        "PRODUCT_DEACTIVATED_NO_ACTIVE_VARIANTS",
+        "PRODUCT",
+        product.id,
+      );
+    }
+  }
+  async removeProduct(id: string, adminId: string) {
+    return this.dataSource.transaction(async (manager) => {
+      const product = await manager
+        .getRepository(Product)
+        .createQueryBuilder("product")
+        .setLock("pessimistic_write")
+        .where("product.id = :id", { id })
+        .getOne();
+      if (!product) throw notFound("PRODUCT_NOT_FOUND", "El producto no existe.");
+      const variants = await manager
+        .getRepository(ProductVariant)
+        .createQueryBuilder("variant")
+        .setLock("pessimistic_write")
+        .where("variant.product_id = :id", { id })
+        .getMany();
+      const hasHistory = (
+        await Promise.all(
+          variants.map((variant) => this.variantHasHistory(manager, variant.id)),
+        )
+      ).some(Boolean);
+      if (hasHistory) {
+        product.active = false;
+        await manager.save(product);
+        for (const variant of variants.filter((variant) => variant.active)) {
+          variant.active = false;
+          await manager.save(variant);
+          await this.audit(manager, adminId, "VARIANT_ARCHIVED", "VARIANT", variant.id);
+        }
+        await this.audit(manager, adminId, "PRODUCT_ARCHIVED", "PRODUCT", product.id);
+        return { result: "ARCHIVED" as const };
+      }
+      const variantIds = variants.map((variant) => variant.id);
+      await manager.delete(ProductMedia, { productId: product.id });
+      if (variantIds.length) {
+        await manager.delete(Inventory, { variantId: In(variantIds) });
+        await manager.remove(variants);
+      }
+      await manager.remove(product);
+      await this.audit(manager, adminId, "PRODUCT_DELETED", "PRODUCT", product.id);
+      return { result: "DELETED" as const };
+    });
+  }
+  async removeVariant(id: string, adminId: string) {
+    return this.dataSource.transaction(async (manager) => {
+      const variant = await manager
+        .getRepository(ProductVariant)
+        .createQueryBuilder("variant")
+        .setLock("pessimistic_write")
+        .where("variant.id = :id", { id })
+        .getOne();
+      if (!variant) throw notFound("VARIANT_NOT_FOUND", "La variante no existe.");
+      const product = await manager
+        .getRepository(Product)
+        .createQueryBuilder("product")
+        .setLock("pessimistic_write")
+        .where("product.id = :productId", { productId: variant.productId })
+        .getOneOrFail();
+      if (await this.variantHasHistory(manager, variant.id)) {
+        if (variant.active) {
+          variant.active = false;
+          await manager.save(variant);
+        }
+        await this.deactivateProductWithoutActiveVariants(manager, product, adminId);
+        await this.audit(manager, adminId, "VARIANT_ARCHIVED", "VARIANT", variant.id);
+        return { result: "ARCHIVED" as const };
+      }
+      await manager.delete(ProductMedia, { productId: variant.productId, variantId: variant.id });
+      await manager.delete(Inventory, { variantId: variant.id });
+      const wasActive = variant.active;
+      await manager.remove(variant);
+      if (wasActive)
+        await this.deactivateProductWithoutActiveVariants(manager, product, adminId);
+      await this.audit(manager, adminId, "VARIANT_DELETED", "VARIANT", id);
+      return { result: "DELETED" as const };
+    });
   }
   async createVariant(productId: string, dto: VariantDto, adminId: string) {
     return this.unique(
