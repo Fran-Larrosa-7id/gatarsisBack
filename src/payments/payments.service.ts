@@ -22,6 +22,18 @@ import {
   WebhookEventStatus,
 } from "./entities/webhook-event.entity";
 
+type PreferenceAction = "READY" | "CREATE" | "RECOVER";
+const PROVIDER_PENDING_STATUSES = [
+  "pending",
+  "in_process",
+  "in_mediation",
+  "authorized",
+] as const;
+const isProviderPending = (status: string) =>
+  PROVIDER_PENDING_STATUSES.includes(
+    status as (typeof PROVIDER_PENDING_STATUSES)[number],
+  );
+
 @Injectable()
 export class PaymentsService {
   private readonly logger = new Logger(PaymentsService.name);
@@ -80,62 +92,111 @@ export class PaymentsService {
         );
       if (order.reservationExpiresAt <= new Date())
         throw new DomainError("ORDER_EXPIRED", "La reserva ya venció.");
-      const preference = await manager.findOneBy(PaymentPreference, {
-        orderId,
-      });
+      let preference = await manager
+        .createQueryBuilder(PaymentPreference, "preference")
+        .setLock("pessimistic_write")
+        .where("preference.order_id = :orderId", { orderId })
+        .getOne();
       if (preference?.status === PaymentPreferenceStatus.READY)
-        return { order, preference, create: false };
-      if (preference && preference.status === PaymentPreferenceStatus.CREATING)
-        throw new DomainError(
-          "PAYMENT_PREFERENCE_NOT_READY",
-          "La preference se está creando; reintentá en instantes.",
-          undefined,
-          409,
+        return { order, preference, action: "READY" as PreferenceAction };
+
+      const now = new Date();
+      if (preference?.status === PaymentPreferenceStatus.CREATING) {
+        const staleAt = new Date(
+          now.getTime() - this.config.preferenceCreatingStaleSeconds * 1000,
         );
-      const saved = await manager.save(
-        PaymentPreference,
-        preference ?? {
+        if (preference.updatedAt > staleAt)
+          throw new DomainError(
+            "PAYMENT_PREFERENCE_NOT_READY",
+            "La preference se está creando; reintentá en instantes.",
+            undefined,
+            409,
+          );
+        this.logger.warn({
+          step: "payment_preference_stale_creating",
           orderId,
-          provider: "mercado_pago",
-          status: PaymentPreferenceStatus.CREATING,
-          providerPreferenceId: null,
-          initPoint: null,
-          lastErrorCode: null,
-          lastErrorAt: null,
-          readyAt: null,
-          lastReconciliationAt: null,
-        },
-      );
-      return { order, preference: saved, create: true };
+          ageSeconds: Math.floor(
+            (now.getTime() - preference.updatedAt.getTime()) / 1000,
+          ),
+          processingResult: "RECOVERY_REQUIRED",
+        });
+        preference.status = PaymentPreferenceStatus.REQUIRES_REVIEW;
+        preference.lastErrorCode = "CREATING_STALE";
+        preference.lastErrorAt = now;
+        preference = await manager.save(preference);
+        return { order, preference, action: "RECOVER" as PreferenceAction };
+      }
+
+      if (
+        preference?.status === PaymentPreferenceStatus.FAILED &&
+        preference.lastErrorCode === "RECOVERY_CONFIRMED_NOT_FOUND"
+      ) {
+        preference.status = PaymentPreferenceStatus.CREATING;
+        preference.providerPreferenceId = null;
+        preference.initPoint = null;
+        preference.lastErrorCode = null;
+        preference.lastErrorAt = null;
+        preference = await manager.save(preference);
+        return { order, preference, action: "CREATE" as PreferenceAction };
+      }
+
+      if (preference) {
+        if (preference.status !== PaymentPreferenceStatus.REQUIRES_REVIEW) {
+          preference.status = PaymentPreferenceStatus.REQUIRES_REVIEW;
+          preference.lastErrorCode = "LEGACY_CREATION_STATE_REQUIRES_RECOVERY";
+          preference.lastErrorAt = now;
+          preference = await manager.save(preference);
+        }
+        return { order, preference, action: "RECOVER" as PreferenceAction };
+      }
+
+      preference = await manager.save(PaymentPreference, {
+        orderId,
+        provider: "mercado_pago",
+        status: PaymentPreferenceStatus.CREATING,
+        providerPreferenceId: null,
+        initPoint: null,
+        lastErrorCode: null,
+        lastErrorAt: null,
+        readyAt: null,
+        lastReconciliationAt: null,
+      });
+      return { order, preference, action: "CREATE" as PreferenceAction };
     });
-    if (!prepared.create)
+
+    if (prepared.action === "READY")
       return this.preferenceResponse(prepared.order, prepared.preference);
-    const items = await this.dataSource
-      .getRepository(OrderItem)
-      .findBy({ orderId });
-    try {
-      const created = await this.gateway.createPreference(
-        this.preferencePayload(prepared.order, items),
-      );
-      const preference = await this.readyPreference(orderId, created);
-      return this.preferenceResponse(prepared.order, preference);
-    } catch (error) {
+
+    if (prepared.action === "RECOVER") {
       const recovered = await this.recoverPreference(orderId);
       if (recovered) return this.preferenceResponse(prepared.order, recovered);
-      await this.dataSource.getRepository(PaymentPreference).update(
-        { orderId },
-        {
-          status: PaymentPreferenceStatus.FAILED,
-          lastErrorCode: "CREATE_FAILED",
-          lastErrorAt: new Date(),
-        },
+      throw this.preferenceCreationPending();
+    }
+
+    return this.createRemotePreference(prepared.order);
+  }
+
+  private async createRemotePreference(order: Order) {
+    const items = await this.dataSource
+      .getRepository(OrderItem)
+      .findBy({ orderId: order.id });
+    try {
+      const created = await this.gateway.createPreference(
+        this.preferencePayload(order, items),
       );
-      throw new DomainError(
-        "PAYMENT_PREFERENCE_CREATION_FAILED",
-        "No se pudo crear la preference de pago.",
-        undefined,
-        503,
-      );
+      const preference = await this.readyPreference(order.id, created);
+      return this.preferenceResponse(order, preference);
+    } catch (error) {
+      await this.markPreferenceAmbiguous(order.id, "CREATE_AMBIGUOUS");
+      const recovered = await this.recoverPreference(order.id);
+      if (recovered) return this.preferenceResponse(order, recovered);
+      this.logger.warn({
+        step: "payment_preference_creation_ambiguous",
+        orderId: order.id,
+        errorCode: this.errorCode(error),
+        processingResult: "REQUIRES_REVIEW",
+      });
+      throw this.preferenceCreationPending();
     }
   }
 
@@ -169,26 +230,160 @@ export class PaymentsService {
     remote: { id: string; init_point: string },
   ) {
     return this.dataSource.transaction(async (manager) => {
-      const preference = await manager.findOneByOrFail(PaymentPreference, {
-        orderId,
-      });
+      await manager
+        .createQueryBuilder(Order, "order")
+        .setLock("pessimistic_write")
+        .where("order.id = :orderId", { orderId })
+        .getOneOrFail();
+      const preference = await manager
+        .createQueryBuilder(PaymentPreference, "preference")
+        .setLock("pessimistic_write")
+        .where("preference.order_id = :orderId", { orderId })
+        .getOneOrFail();
+      if (preference.status === PaymentPreferenceStatus.READY)
+        return preference;
       preference.providerPreferenceId = remote.id;
       preference.initPoint = remote.init_point;
       preference.status = PaymentPreferenceStatus.READY;
       preference.readyAt = new Date();
       preference.lastErrorCode = null;
+      preference.lastErrorAt = null;
+      preference.lastReconciliationAt = new Date();
       return manager.save(preference);
     });
   }
+
   private async recoverPreference(orderId: string) {
+    this.trace("payment_preference_recovery_started", {
+      orderId,
+      processingResult: "SEARCHING_BY_EXTERNAL_REFERENCE",
+    });
+    let matches: Awaited<
+      ReturnType<
+        MercadoPagoGatewayContract["searchPreferencesByExternalReference"]
+      >
+    >;
     try {
-      const matches =
+      matches =
         await this.gateway.searchPreferencesByExternalReference(orderId);
-      if (matches.length !== 1) return null;
-      return await this.readyPreference(orderId, matches[0]);
-    } catch {
+    } catch (error) {
+      await this.markPreferenceAmbiguous(orderId, "RECOVERY_UNAVAILABLE");
+      this.logger.warn({
+        step: "payment_preference_recovery_failed",
+        orderId,
+        errorCode: this.errorCode(error),
+        processingResult: "REQUIRES_REVIEW",
+      });
       return null;
     }
+
+    if (matches.length === 1) {
+      const preference = await this.readyPreference(orderId, matches[0]);
+      this.trace("payment_preference_recovery_succeeded", {
+        orderId,
+        providerPreferenceId: preference.providerPreferenceId,
+        processingResult: "READY",
+      });
+      return preference;
+    }
+    if (matches.length > 1) {
+      await this.markPreferenceAmbiguous(orderId, "RECOVERY_MULTIPLE_MATCHES");
+      this.logger.warn({
+        step: "payment_preference_recovery_ambiguous",
+        orderId,
+        matchCount: matches.length,
+        processingResult: "REQUIRES_REVIEW",
+      });
+      return null;
+    }
+
+    await this.recordPreferenceNotFound(orderId);
+    return null;
+  }
+
+  private async markPreferenceAmbiguous(orderId: string, code: string) {
+    await this.dataSource.transaction(async (manager) => {
+      await manager
+        .createQueryBuilder(Order, "order")
+        .setLock("pessimistic_write")
+        .where("order.id = :orderId", { orderId })
+        .getOne();
+      const preference = await manager
+        .createQueryBuilder(PaymentPreference, "preference")
+        .setLock("pessimistic_write")
+        .where("preference.order_id = :orderId", { orderId })
+        .getOne();
+      if (!preference || preference.status === PaymentPreferenceStatus.READY)
+        return;
+      preference.status = PaymentPreferenceStatus.REQUIRES_REVIEW;
+      preference.lastErrorCode = code;
+      preference.lastErrorAt = new Date();
+      await manager.save(preference);
+    });
+  }
+
+  private async recordPreferenceNotFound(orderId: string) {
+    await this.dataSource.transaction(async (manager) => {
+      await manager
+        .createQueryBuilder(Order, "order")
+        .setLock("pessimistic_write")
+        .where("order.id = :orderId", { orderId })
+        .getOne();
+      const preference = await manager
+        .createQueryBuilder(PaymentPreference, "preference")
+        .setLock("pessimistic_write")
+        .where("preference.order_id = :orderId", { orderId })
+        .getOne();
+      if (
+        !preference ||
+        preference.status === PaymentPreferenceStatus.READY ||
+        (preference.status === PaymentPreferenceStatus.CREATING &&
+          Date.now() - preference.updatedAt.getTime() <
+            this.config.preferenceCreatingStaleSeconds * 1000)
+      )
+        return;
+
+      const now = new Date();
+      const alreadyNotFound =
+        preference.status === PaymentPreferenceStatus.REQUIRES_REVIEW &&
+        preference.lastErrorCode === "RECOVERY_NOT_FOUND";
+      const absenceConfirmed =
+        alreadyNotFound &&
+        preference.lastErrorAt !== null &&
+        now.getTime() - preference.lastErrorAt.getTime() >=
+          this.config.preferenceRecoveryConfirmSeconds * 1000;
+      preference.lastReconciliationAt = now;
+      if (absenceConfirmed) {
+        preference.status = PaymentPreferenceStatus.FAILED;
+        preference.lastErrorCode = "RECOVERY_CONFIRMED_NOT_FOUND";
+        preference.lastErrorAt = now;
+        await manager.save(preference);
+        this.trace("payment_preference_absence_confirmed", {
+          orderId,
+          processingResult: "FAILED_RETRYABLE",
+        });
+        return;
+      }
+
+      preference.status = PaymentPreferenceStatus.REQUIRES_REVIEW;
+      preference.lastErrorCode = "RECOVERY_NOT_FOUND";
+      if (!alreadyNotFound || !preference.lastErrorAt)
+        preference.lastErrorAt = now;
+      await manager.save(preference);
+      this.trace("payment_preference_recovery_not_found", {
+        orderId,
+        processingResult: "REQUIRES_REVIEW",
+      });
+    });
+  }
+
+  private preferenceCreationPending() {
+    return new DomainError(
+      "PAYMENT_PREFERENCE_CREATION_FAILED",
+      "No se pudo confirmar la creación de la preference de pago. Reintentá en instantes.",
+      undefined,
+      503,
+    );
   }
   private preferenceResponse(order: Order, preference: PaymentPreference) {
     return {
@@ -500,6 +695,23 @@ export class PaymentsService {
       let payment = await manager.findOne(Payment, {
         where: { provider: "mercado_pago", providerPaymentId: remote.id },
       });
+      if (payment && payment.orderId !== order.id) {
+        this.logger.warn({
+          step: "payment_provider_order_conflict",
+          providerPaymentId: remote.id,
+          orderId,
+          originalOrderId: payment.orderId,
+          processingResult: "REQUIRES_REVIEW",
+        });
+        payment.reviewReason = "PROVIDER_PAYMENT_ORDER_CONFLICT";
+        if (payment.processingStatus !== PaymentProcessingStatus.APPLIED) {
+          payment.processingStatus = PaymentProcessingStatus.REQUIRES_REVIEW;
+        }
+        await manager.save(payment);
+        return;
+      }
+      const wasApplied =
+        payment?.processingStatus === PaymentProcessingStatus.APPLIED;
       const fields = {
         orderId,
         provider: "mercado_pago",
@@ -524,20 +736,59 @@ export class PaymentsService {
         });
       else Object.assign(payment, fields);
       await manager.save(payment);
+      if (wasApplied) {
+        if (remote.status !== "approved" || order.status !== OrderStatus.PAID)
+          this.logger.warn({
+            step: "payment_terminal_state_preserved",
+            providerPaymentId: remote.id,
+            orderId: order.id,
+            status: remote.status,
+            processingResult: "APPLIED_PAID_NOT_DEGRADED",
+          });
+        return;
+      }
+      if (
+        order.status === OrderStatus.PAID ||
+        order.status === OrderStatus.REFUNDED ||
+        order.status === OrderStatus.CANCELLED
+      ) {
+        payment.processingStatus = PaymentProcessingStatus.REQUIRES_REVIEW;
+        payment.reviewReason = "ORDER_TERMINAL_STATE_CONFLICT";
+        await manager.save(payment);
+        this.logger.warn({
+          step: "payment_terminal_order_preserved",
+          providerPaymentId: remote.id,
+          orderId: order.id,
+          status: remote.status,
+          processingResult: "REQUIRES_REVIEW",
+        });
+        return;
+      }
+      if (order.status === OrderStatus.EXPIRED) {
+        payment.processingStatus = PaymentProcessingStatus.REQUIRES_REVIEW;
+        payment.reviewReason =
+          remote.status === "approved"
+            ? "LATE_APPROVED_AFTER_RELEASE"
+            : "ORDER_EXPIRED_PROVIDER_UPDATE";
+        await manager.save(payment);
+        this.logger.warn({
+          step: "payment_expired_order_update_requires_review",
+          providerPaymentId: remote.id,
+          orderId: order.id,
+          status: remote.status,
+          reviewReason: payment.reviewReason,
+          processingResult: "REQUIRES_REVIEW",
+        });
+        return;
+      }
       const valid =
         remote.external_reference === order.id &&
         remote.currency_id === "ARS" &&
         mercadoPagoAmountToCents(remote.transaction_amount) ===
           order.totalInCents;
-      if (
-        !valid ||
-        (remote.status === "approved" &&
-          order.status === OrderStatus.EXPIRED) ||
-        (remote.status === "approved" &&
-          order.status === OrderStatus.PAID &&
-          payment.processingStatus !== PaymentProcessingStatus.APPLIED)
-      ) {
+      if (!valid) {
         payment.processingStatus = PaymentProcessingStatus.REQUIRES_REVIEW;
+        payment.reviewReason = "PAYMENT_VALIDATION_FAILED";
         await manager.save(payment);
         this.trace("payment_requires_review", {
           providerPaymentId: remote.id,
@@ -576,11 +827,7 @@ export class PaymentsService {
         });
         return;
       }
-      if (
-        ["pending", "in_process", "in_mediation", "authorized"].includes(
-          remote.status,
-        )
-      ) {
+      if (isProviderPending(remote.status)) {
         order.status = OrderStatus.PAYMENT_PENDING;
         payment.processingStatus = PaymentProcessingStatus.RECORDED;
         await manager.save([order, payment]);
@@ -653,13 +900,7 @@ export class PaymentsService {
           (payment) => payment.status === "approved",
         );
         if (approved) await this.recordAndApply(approved);
-        else if (
-          payments.some((payment) =>
-            ["pending", "in_process", "in_mediation", "authorized"].includes(
-              payment.status,
-            ),
-          )
-        )
+        else if (payments.some((payment) => isProviderPending(payment.status)))
           for (const payment of payments) await this.recordAndApply(payment);
         await this.dataSource
           .getRepository(PaymentPreference)
@@ -687,15 +928,17 @@ export class PaymentsService {
 
   @Cron("45 * * * * *") async reconcileExpiredReservations() {
     if (!this.config.enabled) return;
+    const now = new Date();
     const cutoff = new Date(
-      Date.now() - this.config.reconciliationGraceSeconds * 1000,
+      now.getTime() - this.config.reconciliationGraceSeconds * 1000,
     );
     const orders = await this.dataSource.getRepository(Order).find({
       where: {
-        status: OrderStatus.AWAITING_PAYMENT,
+        status: In([OrderStatus.AWAITING_PAYMENT, OrderStatus.PAYMENT_PENDING]),
         reservationExpiresAt: LessThanOrEqual(cutoff),
       },
       take: 25,
+      order: { reservationExpiresAt: "ASC" },
     });
     for (const order of orders) {
       try {
@@ -705,29 +948,82 @@ export class PaymentsService {
         const approved = payments.find(
           (payment) => payment.status === "approved",
         );
-        if (approved) await this.recordAndApply(approved);
-        else if (
-          payments.some((payment) =>
-            ["pending", "in_process", "in_mediation", "authorized"].includes(
-              payment.status,
-            ),
-          )
-        )
-          for (const payment of payments) await this.recordAndApply(payment);
-        else await this.expireWithoutPayment(order.id);
-      } catch {
-        this.logger.warn(`Reconciliation deferred for order ${order.id}`);
+        if (approved) {
+          await this.recordAndApply(approved);
+          continue;
+        }
+
+        const hasPending = payments.some((payment) =>
+          isProviderPending(payment.status),
+        );
+        for (const payment of payments) await this.recordAndApply(payment);
+
+        const unresolvedKnownPending =
+          order.status === OrderStatus.PAYMENT_PENDING && payments.length === 0;
+        if (hasPending || unresolvedKnownPending) {
+          const reviewDeadline = new Date(
+            order.reservationExpiresAt.getTime() +
+              this.config.pendingReviewHours * 3_600_000,
+          );
+          if (now < reviewDeadline) {
+            this.trace("expired_pending_reconciliation_deferred", {
+              orderId: order.id,
+              processingResult: "PENDING_WITHIN_REVIEW_WINDOW",
+            });
+            continue;
+          }
+          this.logger.warn({
+            step: "pending_review_deadline_reached",
+            orderId: order.id,
+            providerState: hasPending ? "PENDING" : "NOT_RETURNED",
+            reviewDeadline: reviewDeadline.toISOString(),
+            processingResult: "RELEASE_REQUIRES_REVIEW",
+          });
+          await this.expireReservation(
+            order.id,
+            true,
+            hasPending
+              ? "Mercado Pago pending review window elapsed"
+              : "Mercado Pago no longer returned the known pending payment after the review window",
+          );
+          continue;
+        }
+
+        await this.expireReservation(
+          order.id,
+          false,
+          payments.length
+            ? "Mercado Pago confirmed a terminal non-approved payment"
+            : "Mercado Pago confirmed no payment",
+        );
+      } catch (error) {
+        this.logger.warn({
+          step: "expired_reservation_reconciliation_deferred",
+          orderId: order.id,
+          errorCode: this.errorCode(error),
+          processingResult: "PROVIDER_UNAVAILABLE_FAIL_CLOSED",
+        });
       }
     }
   }
-  private async expireWithoutPayment(orderId: string) {
-    await this.dataSource.transaction(async (manager) => {
+
+  private async expireReservation(
+    orderId: string,
+    markPendingForReview: boolean,
+    reason: string,
+  ) {
+    return this.dataSource.transaction(async (manager) => {
       const order = await manager
         .createQueryBuilder(Order, "order")
         .setLock("pessimistic_write")
         .where("order.id = :orderId", { orderId })
         .getOne();
-      if (!order || order.status !== OrderStatus.AWAITING_PAYMENT) return;
+      if (
+        !order ||
+        (order.status !== OrderStatus.AWAITING_PAYMENT &&
+          order.status !== OrderStatus.PAYMENT_PENDING)
+      )
+        return false;
       const items = await manager.findBy(OrderItem, { orderId });
       for (const item of items.sort((a, b) =>
         a.variantId.localeCompare(b.variantId),
@@ -737,10 +1033,34 @@ export class PaymentsService {
           item.variantId,
           item.quantity,
           order.id,
-          "Mercado Pago preference expired without payment",
+          reason,
         );
+
+      if (markPendingForReview) {
+        const pendingPayments = (
+          await manager.findBy(Payment, { orderId: order.id })
+        ).filter(
+          (payment) =>
+            payment.processingStatus !== PaymentProcessingStatus.APPLIED &&
+            isProviderPending(payment.providerStatus),
+        );
+        for (const payment of pendingPayments) {
+          payment.processingStatus = PaymentProcessingStatus.REQUIRES_REVIEW;
+          payment.reviewReason = "PENDING_REVIEW_DEADLINE_REACHED";
+        }
+        if (pendingPayments.length) await manager.save(pendingPayments);
+      }
+
       order.status = OrderStatus.EXPIRED;
       await manager.save(order);
+      this.trace("expired_reservation_released", {
+        orderId: order.id,
+        reason,
+        processingResult: markPendingForReview
+          ? "EXPIRED_REQUIRES_REVIEW"
+          : "EXPIRED_CONFIRMED_UNPAID",
+      });
+      return true;
     });
   }
 }

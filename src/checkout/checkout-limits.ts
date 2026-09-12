@@ -1,0 +1,6 @@
+export const MAX_CHECKOUT_LINES = 10;
+export const MAX_QUANTITY_PER_ITEM = 5;
+export const MAX_TOTAL_QUANTITY = 15;
+export const MAX_ACTIVE_RESERVATIONS_PER_EMAIL = 3;
+export const CHECKOUT_RATE_LIMIT = 60;
+export const CHECKOUT_RATE_WINDOW_MS = 60_000;

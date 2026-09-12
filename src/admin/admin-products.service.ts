@@ -189,7 +189,12 @@ export class AdminProductsService {
     return this.unique(
       () =>
         this.dataSource.transaction(async (m) => {
-          const p = await m.findOneBy(Product, { id });
+          const p = await m
+            .getRepository(Product)
+            .createQueryBuilder("product")
+            .setLock("pessimistic_write")
+            .where("product.id = :id", { id })
+            .getOne();
           if (!p) throw notFound("PRODUCT_NOT_FOUND", "El producto no existe.");
           const wasActive = p.active;
           if (dto.slug !== undefined) {
@@ -266,6 +271,7 @@ export class AdminProductsService {
         .where("product.id = :id", { id })
         .getOne();
       if (!product) throw notFound("PRODUCT_NOT_FOUND", "El producto no existe.");
+      const productId = product.id;
       const variants = await manager
         .getRepository(ProductVariant)
         .createQueryBuilder("variant")
@@ -295,12 +301,21 @@ export class AdminProductsService {
         await manager.remove(variants);
       }
       await manager.remove(product);
-      await this.audit(manager, adminId, "PRODUCT_DELETED", "PRODUCT", product.id);
+      await this.audit(manager, adminId, "PRODUCT_DELETED", "PRODUCT", productId);
       return { result: "DELETED" as const };
     });
   }
   async removeVariant(id: string, adminId: string) {
     return this.dataSource.transaction(async (manager) => {
+      // Product is locked first, matching checkout and product deletion lock order.
+      const candidate = await manager.findOneBy(ProductVariant, { id });
+      if (!candidate) throw notFound("VARIANT_NOT_FOUND", "La variante no existe.");
+      const product = await manager
+        .getRepository(Product)
+        .createQueryBuilder("product")
+        .setLock("pessimistic_write")
+        .where("product.id = :productId", { productId: candidate.productId })
+        .getOneOrFail();
       const variant = await manager
         .getRepository(ProductVariant)
         .createQueryBuilder("variant")
@@ -308,12 +323,6 @@ export class AdminProductsService {
         .where("variant.id = :id", { id })
         .getOne();
       if (!variant) throw notFound("VARIANT_NOT_FOUND", "La variante no existe.");
-      const product = await manager
-        .getRepository(Product)
-        .createQueryBuilder("product")
-        .setLock("pessimistic_write")
-        .where("product.id = :productId", { productId: variant.productId })
-        .getOneOrFail();
       if (await this.variantHasHistory(manager, variant.id)) {
         if (variant.active) {
           variant.active = false;
@@ -397,7 +406,20 @@ export class AdminProductsService {
     return this.unique(
       () =>
         this.dataSource.transaction(async (m) => {
-          const v = await m.findOneBy(ProductVariant, { id });
+          const candidate = await m.findOneBy(ProductVariant, { id });
+          if (!candidate) throw notFound("VARIANT_NOT_FOUND", "La variante no existe.");
+          const product = await m
+            .getRepository(Product)
+            .createQueryBuilder("product")
+            .setLock("pessimistic_write")
+            .where("product.id = :productId", { productId: candidate.productId })
+            .getOneOrFail();
+          const v = await m
+            .getRepository(ProductVariant)
+            .createQueryBuilder("variant")
+            .setLock("pessimistic_write")
+            .where("variant.id = :id", { id })
+            .getOne();
           if (!v) throw notFound("VARIANT_NOT_FOUND", "La variante no existe.");
           const wasActive = v.active;
           const attributes =

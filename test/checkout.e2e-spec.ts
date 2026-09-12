@@ -22,11 +22,12 @@ import { Product } from "../src/products/entities/product.entity";
 describe("checkout reservations (PostgreSQL)", () => {
   const reservePayload = (
     items: { variantId: string; quantity: number }[],
+    email = "buyer@example.com",
   ) => ({
     items,
     customer: {
       name: "Test Buyer",
-      email: "buyer@example.com",
+      email,
       phone: "2491234567",
     },
     fulfillment: { method: "PICKUP", note: null },
@@ -104,7 +105,7 @@ describe("checkout reservations (PostgreSQL)", () => {
         request(app.getHttpServer())
           .post("/api/v1/checkout/reserve")
           .set("Idempotency-Key", `concurrent-${index}`)
-          .send(reservePayload([{ variantId: v.id, quantity: 1 }])),
+          .send(reservePayload([{ variantId: v.id, quantity: 1 }], `concurrent-${index}@example.com`)),
       ),
     );
     expect(
@@ -129,7 +130,7 @@ describe("checkout reservations (PostgreSQL)", () => {
         request(app.getHttpServer())
           .post("/api/v1/checkout/reserve")
           .set("Idempotency-Key", `concurrent-ten-${index}`)
-          .send(reservePayload([{ variantId: v.id, quantity: 1 }])),
+          .send(reservePayload([{ variantId: v.id, quantity: 1 }], `concurrent-ten-${index}@example.com`)),
       ),
     );
     expect(
@@ -275,5 +276,55 @@ describe("checkout reservations (PostgreSQL)", () => {
       .get("/api/v1/orders/00000000-0000-4000-8000-000000000000/status")
       .expect(404);
     expect(response.body.code).toBe("ORDER_NOT_FOUND");
+  });
+  it("rejects checkout payloads above the configured line, item and total limits", async () => {
+    const validItem = () => ({ variantId: crypto.randomUUID(), quantity: 1 });
+    const tooManyLines = await request(app.getHttpServer())
+      .post("/api/v1/checkout/reserve")
+      .set("Idempotency-Key", "limits-lines")
+      .send(reservePayload(Array.from({ length: 11 }, validItem)))
+      .expect(400);
+    expect(JSON.stringify(tooManyLines.body)).toContain("CHECKOUT_TOO_MANY_LINES");
+    const tooManyPerItem = await request(app.getHttpServer())
+      .post("/api/v1/checkout/reserve")
+      .set("Idempotency-Key", "limits-item")
+      .send(reservePayload([{ variantId: crypto.randomUUID(), quantity: 6 }]))
+      .expect(400);
+    expect(JSON.stringify(tooManyPerItem.body)).toContain("CHECKOUT_QUANTITY_EXCEEDED");
+    const tooManyTotal = await request(app.getHttpServer())
+      .post("/api/v1/checkout/reserve")
+      .set("Idempotency-Key", "limits-total")
+      .send(reservePayload(Array.from({ length: 4 }, () => ({ variantId: crypto.randomUUID(), quantity: 4 }))))
+      .expect(400);
+    expect(JSON.stringify(tooManyTotal.body)).toContain("CHECKOUT_TOTAL_QUANTITY_EXCEEDED");
+  });
+  it("caps active reservations per normalized customer email", async () => {
+    const v = await variant(10, "reservation-cap");
+    const payload = reservePayload([{ variantId: v.id, quantity: 1 }]);
+    payload.customer.email = "same@example.com";
+    for (let index = 0; index < 3; index++)
+      await request(app.getHttpServer())
+        .post("/api/v1/checkout/reserve")
+        .set("Idempotency-Key", `reservation-cap-${index}`)
+        .send(payload)
+        .expect(201);
+    const blocked = await request(app.getHttpServer())
+      .post("/api/v1/checkout/reserve")
+      .set("Idempotency-Key", "reservation-cap-blocked")
+      .send(payload)
+      .expect(409);
+    expect(blocked.body.code).toBe("ACTIVE_RESERVATION_LIMIT");
+  });
+  it("throttles checkout reserve requests without affecting the catalog", async () => {
+    const responses = await Promise.all(
+      Array.from({ length: 61 }, (_, index) =>
+        request(app.getHttpServer())
+          .post("/api/v1/checkout/reserve")
+          .set("Idempotency-Key", `throttle-${index}`)
+          .send(reservePayload([{ variantId: crypto.randomUUID(), quantity: 1 }])),
+      ),
+    );
+    expect(responses.some((response) => response.status === 429)).toBe(true);
+    await request(app.getHttpServer()).get("/api/v1/products").expect(200);
   });
 });

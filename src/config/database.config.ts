@@ -1,4 +1,5 @@
 import { TypeOrmModuleOptions } from "@nestjs/typeorm";
+import { DataSourceOptions } from "typeorm";
 import { Inventory } from "../inventory/entities/inventory.entity";
 import { InventoryMovement } from "../inventory/entities/inventory-movement.entity";
 import { Order } from "../orders/entities/order.entity";
@@ -31,6 +32,27 @@ const numberFromEnv = (name: string, fallback: number): number => {
   return value;
 };
 
+const positiveNumberFromEnv = (name: string, fallback: number): number => {
+  const value = numberFromEnv(name, fallback);
+  if (value <= 0) throw new Error(`${name} must be positive`);
+  return value;
+};
+
+const positiveIntegerFromEnv = (name: string, fallback: number): number => {
+  const value = positiveNumberFromEnv(name, fallback);
+  if (!Number.isInteger(value)) throw new Error(`${name} must be an integer`);
+  return value;
+};
+
+const databaseSsl = () => {
+  if (process.env.DATABASE_SSL !== "true") return false;
+  const ca = process.env.DATABASE_SSL_CA?.replace(/\\n/g, "\n");
+  return {
+    rejectUnauthorized: true,
+    ...(ca?.trim() ? { ca } : {}),
+  };
+};
+
 export const adminAuthConfig = () => {
   const accessTokenMinutes = numberFromEnv("ADMIN_ACCESS_TOKEN_MINUTES", 15);
   const refreshTokenHours = numberFromEnv("ADMIN_REFRESH_TOKEN_HOURS", 8);
@@ -46,13 +68,26 @@ export const adminAuthConfig = () => {
   };
 };
 
-export const databaseConfig = (): TypeOrmModuleOptions => ({
+const dataSourceOptions = (): DataSourceOptions => ({
   type: "postgres",
   host: process.env.DATABASE_HOST ?? "localhost",
   port: numberFromEnv("DATABASE_PORT", 5432),
   username: process.env.DATABASE_USER ?? "gatarsis",
   password: process.env.DATABASE_PASSWORD ?? "gatarsis_local_password",
   database: process.env.DATABASE_NAME ?? "gatarsis",
+  ssl: databaseSsl(),
+  extra: {
+    max: positiveIntegerFromEnv("DATABASE_POOL_MAX", 10),
+    connectionTimeoutMillis: positiveIntegerFromEnv(
+      "DATABASE_CONNECTION_TIMEOUT_MS",
+      10_000,
+    ),
+    statement_timeout: positiveIntegerFromEnv(
+      "DATABASE_STATEMENT_TIMEOUT_MS",
+      30_000,
+    ),
+    query_timeout: positiveIntegerFromEnv("DATABASE_QUERY_TIMEOUT_MS", 35_000),
+  },
   entities: [
     Product,
     ProductVariant,
@@ -85,22 +120,57 @@ export const databaseConfig = (): TypeOrmModuleOptions => ({
   ],
 });
 
+export const databaseConfig = (): TypeOrmModuleOptions =>
+  dataSourceOptions() as TypeOrmModuleOptions;
+
+export const dataSourceConfig = (): DataSourceOptions => dataSourceOptions();
+
 export const reservationMinutes = (): number =>
   numberFromEnv("STOCK_RESERVATION_MINUTES", 15);
-export const mercadoPagoConfig = () => ({
-  enabled: process.env.MP_ENABLED === "true",
-  accessToken: process.env.MP_ACCESS_TOKEN ?? "",
-  webhookSecret: process.env.MP_WEBHOOK_SECRET ?? "",
-  frontendBaseUrl: process.env.MP_FRONTEND_BASE_URL ?? "",
-  excludeTicket: process.env.MP_EXCLUDE_TICKET !== "false",
-  binaryMode: process.env.MP_BINARY_MODE === "true",
-  reconciliationGraceSeconds: numberFromEnv(
-    "MP_RECONCILIATION_GRACE_SECONDS",
-    120,
-  ),
-  earlyReconciliationIntervalSeconds: numberFromEnv(
-    "MP_EARLY_RECONCILIATION_INTERVAL_SECONDS",
-    60,
-  ),
-  pendingReviewHours: numberFromEnv("MP_PENDING_REVIEW_HOURS", 24),
-});
+export const validateMercadoPagoEnvironment = (environment = process.env) => {
+  if (environment.MP_ENABLED !== "true") return;
+  if (!environment.MP_ACCESS_TOKEN?.trim())
+    throw new Error("MP_ENABLED=true but MP_ACCESS_TOKEN is missing");
+  if (!environment.MP_WEBHOOK_SECRET?.trim())
+    throw new Error("MP_ENABLED=true but MP_WEBHOOK_SECRET is missing");
+  const frontendBaseUrl = environment.MP_FRONTEND_BASE_URL?.trim();
+  if (!frontendBaseUrl)
+    throw new Error("MP_ENABLED=true but MP_FRONTEND_BASE_URL is missing");
+  let parsed: URL;
+  try {
+    parsed = new URL(frontendBaseUrl);
+  } catch {
+    throw new Error("MP_ENABLED=true but MP_FRONTEND_BASE_URL is invalid");
+  }
+  if (parsed.protocol !== "https:")
+    throw new Error("MP_ENABLED=true but MP_FRONTEND_BASE_URL must use HTTPS");
+};
+
+export const mercadoPagoConfig = () => {
+  validateMercadoPagoEnvironment();
+  return {
+    enabled: process.env.MP_ENABLED === "true",
+    accessToken: process.env.MP_ACCESS_TOKEN?.trim() ?? "",
+    webhookSecret: process.env.MP_WEBHOOK_SECRET?.trim() ?? "",
+    frontendBaseUrl: process.env.MP_FRONTEND_BASE_URL?.trim() ?? "",
+    excludeTicket: process.env.MP_EXCLUDE_TICKET !== "false",
+    binaryMode: process.env.MP_BINARY_MODE === "true",
+    reconciliationGraceSeconds: numberFromEnv(
+      "MP_RECONCILIATION_GRACE_SECONDS",
+      120,
+    ),
+    earlyReconciliationIntervalSeconds: numberFromEnv(
+      "MP_EARLY_RECONCILIATION_INTERVAL_SECONDS",
+      60,
+    ),
+    pendingReviewHours: positiveNumberFromEnv("MP_PENDING_REVIEW_HOURS", 24),
+    preferenceCreatingStaleSeconds: positiveNumberFromEnv(
+      "MP_PREFERENCE_CREATING_STALE_SECONDS",
+      60,
+    ),
+    preferenceRecoveryConfirmSeconds: positiveNumberFromEnv(
+      "MP_PREFERENCE_RECOVERY_CONFIRM_SECONDS",
+      30,
+    ),
+  };
+};

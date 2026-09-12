@@ -1,10 +1,11 @@
 import { Injectable } from "@nestjs/common";
 import { createHash } from "crypto";
-import { DataSource, EntityManager, In, QueryFailedError } from "typeorm";
+import { DataSource, EntityManager, QueryFailedError } from "typeorm";
 import { DomainError } from "../common/domain-error";
 import { reservationMinutes } from "../config/database.config";
 import { InventoryService } from "../inventory/inventory.service";
 import { ProductVariant } from "../products/entities/product-variant.entity";
+import { Product } from "../products/entities/product.entity";
 import { Order, OrderStatus } from "../orders/entities/order.entity";
 import { OrderItem } from "../orders/entities/order-item.entity";
 import {
@@ -13,6 +14,12 @@ import {
   OrderFulfillment,
 } from "../orders/entities/order-fulfillment.entity";
 import { ReserveCheckoutDto } from "./dto/reserve-checkout.dto";
+import {
+  MAX_ACTIVE_RESERVATIONS_PER_EMAIL,
+  MAX_CHECKOUT_LINES,
+  MAX_QUANTITY_PER_ITEM,
+  MAX_TOTAL_QUANTITY,
+} from "./checkout-limits";
 
 type NormalizedItem = { variantId: string; quantity: number };
 @Injectable()
@@ -79,11 +86,87 @@ export class CheckoutService {
       relations: { items: true },
     });
     if (existing) return this.responseOrConflict(existing, fingerprint);
-    const variants = await manager.find(ProductVariant, {
-      where: { id: In(items.map((item) => item.variantId)) },
-      relations: { product: true },
+    if (
+      items.length > MAX_CHECKOUT_LINES ||
+      items.some((item) => item.quantity > MAX_QUANTITY_PER_ITEM) ||
+      items.reduce((total, item) => total + item.quantity, 0) >
+        MAX_TOTAL_QUANTITY
+    )
+      throw new DomainError(
+        "CHECKOUT_LIMIT_EXCEEDED",
+        "El checkout supera los límites permitidos.",
+        undefined,
+        400,
+      );
+
+    // Serialize active-reservation checks for the same customer without a
+    // second datastore. The transaction-scoped advisory lock is released on
+    // commit/rollback and does not block unrelated customers.
+    await manager.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [customer.email],
+    );
+    const existingAfterLock = await manager.findOne(Order, {
+      where: { idempotencyKey },
+      relations: { items: true },
     });
-    const byId = new Map(variants.map((variant) => [variant.id, variant]));
+    if (existingAfterLock)
+      return this.responseOrConflict(existingAfterLock, fingerprint);
+    const activeReservations = await manager
+      .getRepository(OrderFulfillment)
+      .createQueryBuilder("fulfillment")
+      .innerJoin(Order, "order", "order.id = fulfillment.order_id")
+      .where("fulfillment.customer_email = :email", { email: customer.email })
+      .andWhere("order.status IN (:...statuses)", {
+        statuses: [OrderStatus.AWAITING_PAYMENT, OrderStatus.PAYMENT_PENDING],
+      })
+      .andWhere("order.reservation_expires_at > NOW()")
+      .getCount();
+    if (activeReservations >= MAX_ACTIVE_RESERVATIONS_PER_EMAIL)
+      throw new DomainError(
+        "ACTIVE_RESERVATION_LIMIT",
+        "Alcanzaste el límite de reservas activas. Esperá a que venza una reserva antes de intentar nuevamente.",
+        undefined,
+        409,
+      );
+
+    const variantIds = [...new Set(items.map((item) => item.variantId))].sort();
+    const variants = await manager
+      .getRepository(ProductVariant)
+      .createQueryBuilder("variant")
+      .where("variant.id IN (:...variantIds)", { variantIds })
+      .getMany();
+    if (!variants.length) {
+      throw new DomainError(
+        "VARIANT_NOT_FOUND",
+        "La variante no existe.",
+        { variantId: items[0].variantId },
+        404,
+      );
+    }
+    const productIds = [
+      ...new Set(variants.map((variant) => variant.productId)),
+    ].sort();
+    const products = await manager
+      .getRepository(Product)
+      .createQueryBuilder("product")
+      .setLock("pessimistic_write")
+      .where("product.id IN (:...productIds)", { productIds })
+      .orderBy("product.id", "ASC")
+      .getMany();
+    const productById = new Map(
+      products.map((product) => [product.id, product]),
+    );
+    const lockedVariants = await manager
+      .getRepository(ProductVariant)
+      .createQueryBuilder("variant")
+      .setLock("pessimistic_write")
+      .where("variant.id IN (:...variantIds)", { variantIds })
+      .orderBy("variant.id", "ASC")
+      .getMany();
+    const byId = new Map(
+      lockedVariants.map((variant) => [variant.id, variant]),
+    );
     for (const item of items) {
       const variant = byId.get(item.variantId);
       if (!variant)
@@ -99,7 +182,7 @@ export class CheckoutService {
           "La variante no está activa.",
           { variantId: item.variantId },
         );
-      if (!variant.product.active)
+      if (!productById.get(variant.productId)?.active)
         throw new DomainError(
           "PRODUCT_INACTIVE",
           "El producto no está activo.",
@@ -130,7 +213,7 @@ export class CheckoutService {
       orderItems.push({
         orderId: order.id,
         variantId: variant.id,
-        productNameSnapshot: variant.product.name,
+        productNameSnapshot: productById.get(variant.productId)!.name,
         variantNameSnapshot: variant.name,
         skuSnapshot: variant.sku,
         unitPriceInCents: variant.priceInCents,

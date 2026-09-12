@@ -2,6 +2,8 @@ import { Injectable } from "@nestjs/common";
 import { DataSource, EntityManager } from "typeorm";
 import { DomainError } from "../common/domain-error";
 import { Inventory } from "./entities/inventory.entity";
+import { ProductVariant } from "../products/entities/product-variant.entity";
+import { Product } from "../products/entities/product.entity";
 import {
   InventoryMovement,
   InventoryMovementType,
@@ -16,6 +18,7 @@ export class InventoryService {
     quantity: number,
     orderId: string,
   ): Promise<void> {
+    await this.lockInventoryMutation(manager, variantId);
     const result = await manager
       .createQueryBuilder()
       .update(Inventory)
@@ -64,6 +67,7 @@ export class InventoryService {
     orderId: string,
     reason = "Reservation expired",
   ): Promise<void> {
+    await this.lockInventoryMutation(manager, variantId);
     const result = await manager
       .createQueryBuilder()
       .update(Inventory)
@@ -93,6 +97,7 @@ export class InventoryService {
     quantity: number,
     orderId: string,
   ): Promise<void> {
+    await this.lockInventoryMutation(manager, variantId);
     const result = await manager
       .createQueryBuilder()
       .update(Inventory)
@@ -136,6 +141,7 @@ export class InventoryService {
         400,
       );
     await this.inTransaction(async (manager) => {
+      await this.lockInventoryMutation(manager, variantId);
       const result = await manager
         .createQueryBuilder()
         .update(Inventory)
@@ -178,6 +184,7 @@ export class InventoryService {
         400,
       );
     await this.inTransaction(async (manager) => {
+      await this.lockInventoryMutation(manager, variantId);
       const result = await manager
         .createQueryBuilder()
         .update(Inventory)
@@ -202,6 +209,37 @@ export class InventoryService {
         reason,
       });
     });
+  }
+
+  /**
+   * All inventory mutations acquire locks in the same order. This prevents a
+   * checkout/payment/expiration transaction (which may already hold the
+   * order lock) from deadlocking with an admin adjustment or product change.
+   */
+  private async lockInventoryMutation(
+    manager: EntityManager,
+    variantId: string,
+  ): Promise<void> {
+    const variant = await manager.findOneBy(ProductVariant, { id: variantId });
+    if (!variant) return;
+
+    await manager
+      .createQueryBuilder(Product, "product")
+      .setLock("pessimistic_write")
+      .where("product.id = :productId", { productId: variant.productId })
+      .getOne();
+
+    await manager
+      .createQueryBuilder(ProductVariant, "variant")
+      .setLock("pessimistic_write")
+      .where("variant.id = :variantId", { variantId })
+      .getOne();
+
+    await manager
+      .createQueryBuilder(Inventory, "inventory")
+      .setLock("pessimistic_write")
+      .where("inventory.variant_id = :variantId", { variantId })
+      .getOne();
   }
 
   private async inTransaction<T>(

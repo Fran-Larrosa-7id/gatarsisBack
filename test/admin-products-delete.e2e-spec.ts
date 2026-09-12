@@ -51,6 +51,16 @@ describe("admin product and variant deletion (PostgreSQL)", () => {
   async function audit(action: string, entityId: string) {
     return ds.getRepository(AdminAuditLog).countBy({ action, entityId });
   }
+  function reserve(variantId: string, key: string) {
+    return request(app.getHttpServer())
+      .post("/api/v1/checkout/reserve")
+      .set("Idempotency-Key", key)
+      .send({
+        items: [{ variantId, quantity: 1 }],
+        customer: { name: "Race buyer", email: `${key}@example.test`, phone: "2491234567" },
+        fulfillment: { method: "PICKUP" },
+      });
+  }
 
   it("hard-deletes a product, its variants, inventory and media when it has no history", async () => {
     const p = await product();
@@ -127,5 +137,47 @@ describe("admin product and variant deletion (PostgreSQL)", () => {
       await ds.query("DROP TRIGGER IF EXISTS fail_product_variant_delete ON product_variants");
       await ds.query("DROP FUNCTION IF EXISTS fail_product_variant_delete()");
     }
+  });
+
+  it("serializes a product archive/delete winner before a concurrent checkout reservation", async () => {
+    const p = await product();
+    const v = await variant(p.id, "race");
+    await ds.getRepository(Inventory).update({ variantId: v.id }, { stockOnHand: 1 });
+    const runner = ds.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    await runner.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [p.id]);
+    const archivePromise = request(app.getHttpServer()).delete(`/api/v1/admin/products/${p.id}`).set(auth());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const reservePromise = reserve(v.id, `race-${crypto.randomUUID()}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runner.commitTransaction();
+    await runner.release();
+    const [archive, checkout] = await Promise.all([archivePromise, reservePromise]);
+    expect(archive.status).toBe(200);
+    expect(archive.body.result).toBe("DELETED");
+    expect(checkout.status).not.toBe(201);
+    expect(checkout.body.code).toMatch(/VARIANT_NOT_FOUND|PRODUCT_INACTIVE|VARIANT_INACTIVE|OUT_OF_STOCK/);
+  });
+
+  it("serializes a variant delete winner before a concurrent checkout reservation", async () => {
+    const p = await product();
+    const v = await variant(p.id, "variant-race");
+    await ds.getRepository(Inventory).update({ variantId: v.id }, { stockOnHand: 1 });
+    const runner = ds.createQueryRunner();
+    await runner.connect();
+    await runner.startTransaction();
+    await runner.query('SELECT id FROM products WHERE id = $1 FOR UPDATE', [p.id]);
+    const archivePromise = request(app.getHttpServer()).delete(`/api/v1/admin/variants/${v.id}`).set(auth());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const reservePromise = reserve(v.id, `variant-race-${crypto.randomUUID()}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await runner.commitTransaction();
+    await runner.release();
+    const [archive, checkout] = await Promise.all([archivePromise, reservePromise]);
+    expect(archive.status).toBe(200);
+    expect(archive.body.result).toBe("DELETED");
+    expect(checkout.status).not.toBe(201);
+    expect(checkout.body.code).toMatch(/VARIANT_NOT_FOUND|PRODUCT_INACTIVE|VARIANT_INACTIVE|OUT_OF_STOCK/);
   });
 });
