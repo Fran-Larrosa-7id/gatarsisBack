@@ -1,4 +1,4 @@
-import { INestApplication, ValidationPipe } from "@nestjs/common";
+import { INestApplication, Logger, ValidationPipe } from "@nestjs/common";
 import { Test } from "@nestjs/testing";
 import request = require("supertest");
 import { DataSource } from "typeorm";
@@ -255,6 +255,54 @@ describe("payments webhook and early reconciliation (PostgreSQL)", () => {
     );
   });
 
+  it("logs a sanitized diagnostic that identifies the webhook URL and TEST event", async () => {
+    const { order, v } = await reservedOrder();
+    const payment = approved(order.id, "diagnostic-test-payment");
+    remoteById.set(payment.id, payment);
+    const log = jest.spyOn(Logger.prototype, "log").mockImplementation();
+    try {
+      await request(app.getHttpServer())
+        .post(
+          `/api/v1/webhooks/mercado-pago?env=test&type=payment&data.id=${payment.id}&access_token=must-not-be-logged`,
+        )
+        .set("x-signature", "test")
+        .set("x-request-id", "diagnostic-request")
+        .set("user-agent", "MercadoPago-Test")
+        .send({
+          id: "diagnostic-event",
+          type: "payment",
+          action: "payment.updated",
+          live_mode: false,
+          data: { id: payment.id },
+        })
+        .expect(200);
+      const diagnostic = log.mock.calls
+        .map(([message]) => message)
+        .find(
+          (message) =>
+            typeof message === "object" &&
+            message !== null &&
+            (message as { step?: string }).step ===
+              "webhook_request_diagnostic",
+        );
+      expect(diagnostic).toMatchObject({
+        webhookEnvironment: "test",
+        requestUrl: `/api/v1/webhooks/mercado-pago?env=test&type=payment&data.id=${payment.id}`,
+        eventType: "payment",
+        action: "payment.updated",
+        liveMode: false,
+        providerPaymentId: payment.id,
+        hasXSignature: true,
+        hasXRequestId: true,
+        userAgent: "MercadoPago-Test",
+      });
+      expect(JSON.stringify(diagnostic)).not.toContain("must-not-be-logged");
+    } finally {
+      log.mockRestore();
+    }
+    await expectSale(order.id, v.id);
+  });
+
   it.each(["pending", "in_process", "rejected"])(
     "does not downgrade a PAID/APPLIED payment after a late %s provider update",
     async (lateStatus) => {
@@ -303,12 +351,10 @@ describe("payments webhook and early reconciliation (PostgreSQL)", () => {
       await ds.getRepository(Order).findOneByOrFail({ id: second.order.id }),
     ).toMatchObject({ status: OrderStatus.AWAITING_PAYMENT });
     expect(
-      await ds
-        .getRepository(InventoryMovement)
-        .countBy({
-          orderId: second.order.id,
-          type: InventoryMovementType.SALE,
-        }),
+      await ds.getRepository(InventoryMovement).countBy({
+        orderId: second.order.id,
+        type: InventoryMovementType.SALE,
+      }),
     ).toBe(0);
   });
 
