@@ -20,6 +20,12 @@ export class PublicRafflesController {
     return this.raffles.active();
   }
 
+  @Get("latest")
+  @Header("Cache-Control", "no-store")
+  latest() {
+    return this.raffles.latest();
+  }
+
   @Get(":id")
   @Header("Cache-Control", "no-store")
   detail(@Param("id", new ParseUUIDPipe()) id: string) {

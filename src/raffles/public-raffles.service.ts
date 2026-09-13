@@ -43,6 +43,20 @@ export class PublicRafflesService {
     return this.view(raffle);
   }
 
+  async latest() {
+    const raffle = await this.dataSource.getRepository(Raffle).findOne({
+      where: { status: In(PUBLIC_RAFFLE_STATUSES) },
+      select: this.publicSelect(),
+      order: { createdAt: "DESC" },
+    });
+    if (!raffle)
+      throw new NotFoundException({
+        code: "RAFFLE_NOT_FOUND",
+        message: "Todavía no publicamos ninguna rifa.",
+      });
+    return this.view(raffle);
+  }
+
   async numbers(id: string) {
     const raffle = await this.visibleRaffle(id);
     if (!raffle) this.notFound();
