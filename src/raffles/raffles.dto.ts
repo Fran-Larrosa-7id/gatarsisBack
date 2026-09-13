@@ -100,3 +100,13 @@ export class RaffleListDto {
   @Max(100)
   pageSize?: number;
 }
+
+export class DrawRaffleDto {
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  @Max(99)
+  winningNumber!: number;
+}
+
+export class RafflePurchasesListDto extends RaffleListDto {}

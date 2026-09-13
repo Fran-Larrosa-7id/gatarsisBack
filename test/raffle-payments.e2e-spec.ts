@@ -290,7 +290,7 @@ describe("raffle payments R4 (PostgreSQL)", () => {
       ).body.code,
     ).toBe("RAFFLE_RESERVATION_EXPIRED");
 
-    const inconsistent = await reserve();
+    const inconsistent = await reserve([8, 9, 10], expired.raffle.id);
     const number = (await numbersFor(inconsistent.purchase.id))[0];
     await ds.getRepository(RaffleNumber).update(number.id, {
       status: RaffleNumberStatus.AVAILABLE,
@@ -463,7 +463,7 @@ describe("raffle payments R4 (PostgreSQL)", () => {
       await ds.getRepository(Order).findOneByOrFail({ id: ownership.order.id }),
     ).toMatchObject({ status: OrderStatus.AWAITING_PAYMENT });
 
-    const amount = await reserve();
+    const amount = await reserve([11, 12, 13], ownership.raffle.id);
     const wrongAmount = remote(amount.order, "approved", undefined, 1);
     await payments.recordAndApply(wrongAmount);
     expect(

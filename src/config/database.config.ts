@@ -29,6 +29,7 @@ import { RafflesFoundation1767225600000 } from "../database/migrations/176722560
 import { Raffle } from "../raffles/entities/raffle.entity";
 import { RaffleNumber } from "../raffles/entities/raffle-number.entity";
 import { RafflePurchase } from "../raffles/entities/raffle-purchase.entity";
+import { OneActiveRaffle1767312000000 } from "../database/migrations/1767312000000-OneActiveRaffle";
 
 const numberFromEnv = (name: string, fallback: number): number => {
   const value = Number(process.env[name] ?? fallback);
@@ -125,6 +126,7 @@ const dataSourceOptions = (): DataSourceOptions => ({
     EarlyPaymentReconciliation1767052800000,
     VariantAttributes1767139200000,
     RafflesFoundation1767225600000,
+    OneActiveRaffle1767312000000,
   ],
 });
 

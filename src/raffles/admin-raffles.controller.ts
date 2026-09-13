@@ -10,7 +10,13 @@ import {
   Req,
 } from "@nestjs/common";
 import { AdminRequest } from "../admin/admin-auth.guard";
-import { CreateRaffleDto, RaffleListDto, UpdateRaffleDto } from "./raffles.dto";
+import {
+  CreateRaffleDto,
+  DrawRaffleDto,
+  RaffleListDto,
+  RafflePurchasesListDto,
+  UpdateRaffleDto,
+} from "./raffles.dto";
 import { RafflesService } from "./raffles.service";
 
 @Controller("admin/raffles")
@@ -39,5 +45,67 @@ export class AdminRafflesController {
     @Req() request: AdminRequest,
   ) {
     return this.raffles.update(id, dto, request.admin!.id);
+  }
+
+  @Post(":id/publish")
+  publish(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Req() request: AdminRequest,
+  ) {
+    return this.raffles.publish(id, request.admin!.id);
+  }
+
+  @Post(":id/pause")
+  pause(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Req() request: AdminRequest,
+  ) {
+    return this.raffles.pause(id, request.admin!.id);
+  }
+
+  @Post(":id/resume")
+  resume(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Req() request: AdminRequest,
+  ) {
+    return this.raffles.resume(id, request.admin!.id);
+  }
+
+  @Post(":id/close")
+  close(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Req() request: AdminRequest,
+  ) {
+    return this.raffles.close(id, request.admin!.id);
+  }
+
+  @Post(":id/draw")
+  draw(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Body() dto: DrawRaffleDto,
+    @Req() request: AdminRequest,
+  ) {
+    return this.raffles.draw(id, dto.winningNumber, request.admin!.id);
+  }
+
+  @Get(":id/numbers")
+  numbers(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.raffles.numbers(id);
+  }
+
+  @Get(":id/purchases")
+  purchases(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Query() query: RafflePurchasesListDto,
+  ) {
+    return this.raffles.purchases(id, query);
+  }
+
+  @Get(":id/purchases/:purchaseId")
+  purchaseDetail(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Param("purchaseId", new ParseUUIDPipe()) purchaseId: string,
+  ) {
+    return this.raffles.purchaseDetail(id, purchaseId);
   }
 }
