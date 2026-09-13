@@ -25,6 +25,10 @@ import { RefundOperations1766880000000 } from "../database/migrations/1766880000
 import { VariantMedia1766966400000 } from "../database/migrations/1766966400000-VariantMedia";
 import { EarlyPaymentReconciliation1767052800000 } from "../database/migrations/1767052800000-EarlyPaymentReconciliation";
 import { VariantAttributes1767139200000 } from "../database/migrations/1767139200000-VariantAttributes";
+import { RafflesFoundation1767225600000 } from "../database/migrations/1767225600000-RafflesFoundation";
+import { Raffle } from "../raffles/entities/raffle.entity";
+import { RaffleNumber } from "../raffles/entities/raffle-number.entity";
+import { RafflePurchase } from "../raffles/entities/raffle-purchase.entity";
 
 const numberFromEnv = (name: string, fallback: number): number => {
   const value = Number(process.env[name] ?? fallback);
@@ -104,6 +108,9 @@ const dataSourceOptions = (): DataSourceOptions => ({
     OrderFulfillment,
     ProductMedia,
     RefundOperation,
+    Raffle,
+    RafflePurchase,
+    RaffleNumber,
   ],
   synchronize: false,
   migrations: [
@@ -117,6 +124,7 @@ const dataSourceOptions = (): DataSourceOptions => ({
     VariantMedia1766966400000,
     EarlyPaymentReconciliation1767052800000,
     VariantAttributes1767139200000,
+    RafflesFoundation1767225600000,
   ],
 });
 

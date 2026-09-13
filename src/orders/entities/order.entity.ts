@@ -16,10 +16,17 @@ export enum OrderStatus {
   CANCELLED = "CANCELLED",
   REFUNDED = "REFUNDED",
 }
+export enum OrderKind {
+  MERCH = "MERCH",
+  RAFFLE = "RAFFLE",
+}
 @Entity({ name: "orders" })
 @Index(["status", "reservationExpiresAt"])
+@Index(["kind", "status", "reservationExpiresAt"])
 export class Order {
   @PrimaryGeneratedColumn("uuid") id!: string;
+  @Column({ type: "enum", enum: OrderKind, default: OrderKind.MERCH })
+  kind!: OrderKind;
   @Column({ type: "enum", enum: OrderStatus }) status!: OrderStatus;
   @Column({ name: "idempotency_key", unique: true }) idempotencyKey!: string;
   @Column({ name: "request_fingerprint", type: "varchar", nullable: true })

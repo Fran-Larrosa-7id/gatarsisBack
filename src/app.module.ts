@@ -9,6 +9,7 @@ import { OrdersModule } from "./orders/orders.module";
 import { ProductsModule } from "./products/products.module";
 import { PaymentsModule } from "./payments/payments.module";
 import { AdminModule } from "./admin/admin.module";
+import { RafflesModule } from "./raffles/raffles.module";
 @Module({
   imports: [
     TypeOrmModule.forRootAsync({ useFactory: databaseConfig }),
@@ -19,6 +20,7 @@ import { AdminModule } from "./admin/admin.module";
     CheckoutModule,
     PaymentsModule,
     AdminModule,
+    RafflesModule,
     HealthModule,
   ],
 })
