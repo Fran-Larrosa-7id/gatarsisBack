@@ -48,7 +48,7 @@ describe("payments webhook and early reconciliation (PostgreSQL)", () => {
     process.env.MP_ENABLED = "true";
     process.env.MP_ACCESS_TOKEN = "test-token";
     process.env.MP_WEBHOOK_SECRET = "test-secret";
-    process.env.MP_FRONTEND_BASE_URL = "https://frontend.test";
+    process.env.FRONTEND_URL = "https://gatarsis.com.ar/";
     process.env.MP_PENDING_REVIEW_HOURS = "1";
     process.env.MP_PREFERENCE_CREATING_STALE_SECONDS = "60";
     process.env.MP_PREFERENCE_RECOVERY_CONFIRM_SECONDS = "30";
@@ -654,13 +654,22 @@ describe("payments webhook and early reconciliation (PostgreSQL)", () => {
     expect(search).toHaveBeenCalledTimes(calls);
   });
 
-  it("creates one Preference and keeps notification_url out of the payload", async () => {
+  it("creates one Preference with the Gatarsis return URLs and no notification_url", async () => {
     const { order } = await orderWithoutPreference();
     const response = await request(app.getHttpServer())
       .post(`/api/v1/checkout/${order.id}/mercado-pago/preference`)
       .expect(201);
     expect(response.body.preferenceId).toBe("created-preference");
     expect(createPreference).toHaveBeenCalledTimes(1);
+    expect(createPreference.mock.calls[0][0]).toMatchObject({
+      external_reference: order.id,
+      back_urls: {
+        success: "https://gatarsis.com.ar/checkout/success",
+        pending: "https://gatarsis.com.ar/checkout/pending",
+        failure: "https://gatarsis.com.ar/checkout/failure",
+      },
+      auto_return: "approved",
+    });
     expect(createPreference.mock.calls[0][0]).not.toHaveProperty(
       "notification_url",
     );

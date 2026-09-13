@@ -127,23 +127,27 @@ export const dataSourceConfig = (): DataSourceOptions => dataSourceOptions();
 
 export const reservationMinutes = (): number =>
   numberFromEnv("STOCK_RESERVATION_MINUTES", 15);
+
+const frontendUrl = (environment: NodeJS.ProcessEnv): string =>
+  (environment.FRONTEND_URL?.trim() ?? "").replace(/\/+$/, "");
+
 export const validateMercadoPagoEnvironment = (environment = process.env) => {
   if (environment.MP_ENABLED !== "true") return;
   if (!environment.MP_ACCESS_TOKEN?.trim())
     throw new Error("MP_ENABLED=true but MP_ACCESS_TOKEN is missing");
   if (!environment.MP_WEBHOOK_SECRET?.trim())
     throw new Error("MP_ENABLED=true but MP_WEBHOOK_SECRET is missing");
-  const frontendBaseUrl = environment.MP_FRONTEND_BASE_URL?.trim();
-  if (!frontendBaseUrl)
-    throw new Error("MP_ENABLED=true but MP_FRONTEND_BASE_URL is missing");
+  const publicFrontendUrl = frontendUrl(environment);
+  if (!publicFrontendUrl)
+    throw new Error("MP_ENABLED=true but FRONTEND_URL is missing");
   let parsed: URL;
   try {
-    parsed = new URL(frontendBaseUrl);
+    parsed = new URL(publicFrontendUrl);
   } catch {
-    throw new Error("MP_ENABLED=true but MP_FRONTEND_BASE_URL is invalid");
+    throw new Error("MP_ENABLED=true but FRONTEND_URL is invalid");
   }
   if (parsed.protocol !== "https:")
-    throw new Error("MP_ENABLED=true but MP_FRONTEND_BASE_URL must use HTTPS");
+    throw new Error("MP_ENABLED=true but FRONTEND_URL must use HTTPS");
 };
 
 export const mercadoPagoConfig = () => {
@@ -152,7 +156,7 @@ export const mercadoPagoConfig = () => {
     enabled: process.env.MP_ENABLED === "true",
     accessToken: process.env.MP_ACCESS_TOKEN?.trim() ?? "",
     webhookSecret: process.env.MP_WEBHOOK_SECRET?.trim() ?? "",
-    frontendBaseUrl: process.env.MP_FRONTEND_BASE_URL?.trim() ?? "",
+    frontendUrl: frontendUrl(process.env),
     excludeTicket: process.env.MP_EXCLUDE_TICKET !== "false",
     binaryMode: process.env.MP_BINARY_MODE === "true",
     reconciliationGraceSeconds: numberFromEnv(

@@ -17,7 +17,10 @@ export class HealthController {
     return {
       status: "ok",
       mercadoPagoConfigured: Boolean(
-        config.enabled && config.accessToken && config.webhookSecret && config.frontendBaseUrl,
+        config.enabled &&
+        config.accessToken &&
+        config.webhookSecret &&
+        config.frontendUrl,
       ),
     };
   }

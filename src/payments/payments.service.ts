@@ -201,7 +201,7 @@ export class PaymentsService {
   }
 
   private preferencePayload(order: Order, items: OrderItem[]) {
-    const base = this.config.frontendBaseUrl.replace(/\/$/, "");
+    const frontendUrl = this.config.frontendUrl;
     return {
       items: items.map((item) => ({
         id: item.skuSnapshot,
@@ -211,9 +211,9 @@ export class PaymentsService {
       })),
       external_reference: order.id,
       back_urls: {
-        success: `${base}/checkout/success`,
-        pending: `${base}/checkout/pending`,
-        failure: `${base}/checkout/failure`,
+        success: `${frontendUrl}/checkout/success`,
+        pending: `${frontendUrl}/checkout/pending`,
+        failure: `${frontendUrl}/checkout/failure`,
       },
       auto_return: "approved",
       expires: true,

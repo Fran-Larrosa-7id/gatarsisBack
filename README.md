@@ -29,7 +29,7 @@ El checkout limita a 10 líneas, 5 unidades por línea y 15 unidades totales. Ad
 
 ## Mercado Pago
 
-Configurá sin commitear secretos: `MP_ENABLED=true`, `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET` y `MP_FRONTEND_BASE_URL` (una URL HTTPS pública). También están disponibles `MP_EXCLUDE_TICKET`, `MP_BINARY_MODE`, `MP_RECONCILIATION_GRACE_SECONDS`, `MP_PENDING_REVIEW_HOURS`, `MP_PREFERENCE_CREATING_STALE_SECONDS` y `MP_PREFERENCE_RECOVERY_CONFIRM_SECONDS`.
+Configurá sin commitear secretos: `MP_ENABLED=true`, `MP_ACCESS_TOKEN`, `MP_WEBHOOK_SECRET` y `FRONTEND_URL=https://gatarsis.com.ar`. `FRONTEND_URL` se normaliza aunque termine en `/` y se usa exclusivamente para las `back_urls` del comprador. También están disponibles `MP_EXCLUDE_TICKET`, `MP_BINARY_MODE`, `MP_RECONCILIATION_GRACE_SECONDS`, `MP_PENDING_REVIEW_HOURS`, `MP_PREFERENCE_CREATING_STALE_SECONDS` y `MP_PREFERENCE_RECOVERY_CONFIRM_SECONDS`.
 
 Después de reservar, solicitá `POST /checkout/:orderId/mercado-pago/preference`. La preference se genera desde los snapshots de `OrderItem`, usa `external_reference=orderId` y vence junto con la reserva. La respuesta devuelve `preferenceId`, `initPoint` y vencimiento, nunca el Access Token.
 
@@ -45,7 +45,7 @@ Una orden vencida en `PAYMENT_PENDING` continúa reconciliándose durante `MP_PE
 
 La creación de Preference usa `CREATING` como single-flight. Un intento stale o ambiguo pasa a `REQUIRES_REVIEW` y se busca por `external_reference`; sólo después de dos búsquedas vacías separadas por `MP_PREFERENCE_RECOVERY_CONFIRM_SECONDS` queda `FAILED` y se habilita un nuevo POST al proveedor.
 
-Checklist sandbox: crear/seleccionar aplicación, usar Access Token de prueba, configurar webhook HTTPS de Payments y secret, definir `MP_FRONTEND_BASE_URL` pública y hacer una compra con credenciales/tarjetas de prueba. No usar `localhost` como URL pública.
+Checklist sandbox: crear/seleccionar aplicación, usar Access Token de prueba, configurar webhook HTTPS de Payments y secret, definir `FRONTEND_URL=https://gatarsis.com.ar` y hacer una compra con credenciales/tarjetas de prueba. La URL del webhook continúa siendo la del backend; `FRONTEND_URL` no se utiliza como `notification_url`.
 
 ## Tests
 

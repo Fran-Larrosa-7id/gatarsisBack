@@ -5,16 +5,13 @@ describe("Mercado Pago production configuration", () => {
     MP_ENABLED: "true",
     MP_ACCESS_TOKEN: "test-token",
     MP_WEBHOOK_SECRET: "test-secret",
-    MP_FRONTEND_BASE_URL: "https://shop.example.test",
+    FRONTEND_URL: "https://gatarsis.com.ar",
   };
 
   it.each([
     ["MP_ACCESS_TOKEN", "MP_ENABLED=true but MP_ACCESS_TOKEN is missing"],
     ["MP_WEBHOOK_SECRET", "MP_ENABLED=true but MP_WEBHOOK_SECRET is missing"],
-    [
-      "MP_FRONTEND_BASE_URL",
-      "MP_ENABLED=true but MP_FRONTEND_BASE_URL is missing",
-    ],
+    ["FRONTEND_URL", "MP_ENABLED=true but FRONTEND_URL is missing"],
   ])("rejects missing %s without exposing credentials", (key, expected) => {
     const environment = { ...valid };
     delete environment[key as keyof typeof environment];
@@ -31,15 +28,15 @@ describe("Mercado Pago production configuration", () => {
     expect(() =>
       validateMercadoPagoEnvironment({
         ...valid,
-        MP_FRONTEND_BASE_URL: "not-a-url",
+        FRONTEND_URL: "not-a-url",
       }),
-    ).toThrow("MP_FRONTEND_BASE_URL is invalid");
+    ).toThrow("FRONTEND_URL is invalid");
     expect(() =>
       validateMercadoPagoEnvironment({
         ...valid,
-        MP_FRONTEND_BASE_URL: "http://shop.example.test",
+        FRONTEND_URL: "http://gatarsis.com.ar",
       }),
-    ).toThrow("MP_FRONTEND_BASE_URL must use HTTPS");
+    ).toThrow("FRONTEND_URL must use HTTPS");
   });
 
   it("accepts complete production configuration and disabled mode without credentials", () => {

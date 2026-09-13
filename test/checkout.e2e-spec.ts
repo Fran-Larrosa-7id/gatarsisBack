@@ -41,7 +41,7 @@ describe("checkout reservations (PostgreSQL)", () => {
     process.env.MP_ENABLED = "true";
     process.env.MP_ACCESS_TOKEN = "test-token";
     process.env.MP_WEBHOOK_SECRET = "test-secret";
-    process.env.MP_FRONTEND_BASE_URL = "https://frontend.test";
+    process.env.FRONTEND_URL = "https://gatarsis.com.ar/";
     const module = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(MERCADO_PAGO_GATEWAY)
       .useValue({
@@ -105,7 +105,12 @@ describe("checkout reservations (PostgreSQL)", () => {
         request(app.getHttpServer())
           .post("/api/v1/checkout/reserve")
           .set("Idempotency-Key", `concurrent-${index}`)
-          .send(reservePayload([{ variantId: v.id, quantity: 1 }], `concurrent-${index}@example.com`)),
+          .send(
+            reservePayload(
+              [{ variantId: v.id, quantity: 1 }],
+              `concurrent-${index}@example.com`,
+            ),
+          ),
       ),
     );
     expect(
@@ -130,7 +135,12 @@ describe("checkout reservations (PostgreSQL)", () => {
         request(app.getHttpServer())
           .post("/api/v1/checkout/reserve")
           .set("Idempotency-Key", `concurrent-ten-${index}`)
-          .send(reservePayload([{ variantId: v.id, quantity: 1 }], `concurrent-ten-${index}@example.com`)),
+          .send(
+            reservePayload(
+              [{ variantId: v.id, quantity: 1 }],
+              `concurrent-ten-${index}@example.com`,
+            ),
+          ),
       ),
     );
     expect(
@@ -255,12 +265,10 @@ describe("checkout reservations (PostgreSQL)", () => {
         .findOneByOrFail({ providerPaymentId: payment.id }),
     ).toMatchObject({ processingStatus: PaymentProcessingStatus.APPLIED });
     expect(
-      await dataSource
-        .getRepository(InventoryMovement)
-        .countBy({
-          orderId: reservation.body.orderId,
-          type: InventoryMovementType.SALE,
-        }),
+      await dataSource.getRepository(InventoryMovement).countBy({
+        orderId: reservation.body.orderId,
+        type: InventoryMovementType.SALE,
+      }),
     ).toBe(1);
   });
   it("rejects a non-UUID order status path parameter before PostgreSQL", async () => {
@@ -284,19 +292,32 @@ describe("checkout reservations (PostgreSQL)", () => {
       .set("Idempotency-Key", "limits-lines")
       .send(reservePayload(Array.from({ length: 11 }, validItem)))
       .expect(400);
-    expect(JSON.stringify(tooManyLines.body)).toContain("CHECKOUT_TOO_MANY_LINES");
+    expect(JSON.stringify(tooManyLines.body)).toContain(
+      "CHECKOUT_TOO_MANY_LINES",
+    );
     const tooManyPerItem = await request(app.getHttpServer())
       .post("/api/v1/checkout/reserve")
       .set("Idempotency-Key", "limits-item")
       .send(reservePayload([{ variantId: crypto.randomUUID(), quantity: 6 }]))
       .expect(400);
-    expect(JSON.stringify(tooManyPerItem.body)).toContain("CHECKOUT_QUANTITY_EXCEEDED");
+    expect(JSON.stringify(tooManyPerItem.body)).toContain(
+      "CHECKOUT_QUANTITY_EXCEEDED",
+    );
     const tooManyTotal = await request(app.getHttpServer())
       .post("/api/v1/checkout/reserve")
       .set("Idempotency-Key", "limits-total")
-      .send(reservePayload(Array.from({ length: 4 }, () => ({ variantId: crypto.randomUUID(), quantity: 4 }))))
+      .send(
+        reservePayload(
+          Array.from({ length: 4 }, () => ({
+            variantId: crypto.randomUUID(),
+            quantity: 4,
+          })),
+        ),
+      )
       .expect(400);
-    expect(JSON.stringify(tooManyTotal.body)).toContain("CHECKOUT_TOTAL_QUANTITY_EXCEEDED");
+    expect(JSON.stringify(tooManyTotal.body)).toContain(
+      "CHECKOUT_TOTAL_QUANTITY_EXCEEDED",
+    );
   });
   it("caps active reservations per normalized customer email", async () => {
     const v = await variant(10, "reservation-cap");
@@ -321,7 +342,9 @@ describe("checkout reservations (PostgreSQL)", () => {
         request(app.getHttpServer())
           .post("/api/v1/checkout/reserve")
           .set("Idempotency-Key", `throttle-${index}`)
-          .send(reservePayload([{ variantId: crypto.randomUUID(), quantity: 1 }])),
+          .send(
+            reservePayload([{ variantId: crypto.randomUUID(), quantity: 1 }]),
+          ),
       ),
     );
     expect(responses.some((response) => response.status === 429)).toBe(true);
