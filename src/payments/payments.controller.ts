@@ -44,6 +44,12 @@ export class PaymentsController {
   ) {
     return this.payments.createPreference(orderId);
   }
+  @Post("raffle-purchases/:id/mercado-pago/preference")
+  createRafflePreference(
+    @Param("id", new ParseUUIDPipe({ version: "4" })) id: string,
+  ) {
+    return this.payments.createRafflePreference(id);
+  }
   @Post("webhooks/mercado-pago") @HttpCode(200) webhook(
     @Body() body: Record<string, unknown>,
     @Req() req: Request,
@@ -77,5 +83,11 @@ export class PaymentsController {
     @Param("orderId", new ParseUUIDPipe({ version: "4" })) orderId: string,
   ) {
     return this.payments.status(orderId);
+  }
+  @Get("raffle-purchases/:id/status")
+  rafflePurchaseStatus(
+    @Param("id", new ParseUUIDPipe({ version: "4" })) id: string,
+  ) {
+    return this.payments.rafflePurchaseStatus(id);
   }
 }

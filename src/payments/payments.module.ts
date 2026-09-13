@@ -1,5 +1,6 @@
 import { Module } from "@nestjs/common";
 import { InventoryModule } from "../inventory/inventory.module";
+import { RafflesModule } from "../raffles/raffles.module";
 import {
   MercadoPagoGateway,
   MERCADO_PAGO_GATEWAY,
@@ -7,7 +8,7 @@ import {
 import { PaymentsController } from "./payments.controller";
 import { PaymentsService } from "./payments.service";
 @Module({
-  imports: [InventoryModule],
+  imports: [InventoryModule, RafflesModule],
   controllers: [PaymentsController],
   providers: [
     PaymentsService,

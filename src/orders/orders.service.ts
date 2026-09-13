@@ -3,11 +3,7 @@ import { Cron } from "@nestjs/schedule";
 import { DataSource, EntityManager, LessThanOrEqual } from "typeorm";
 import { InventoryService } from "../inventory/inventory.service";
 import { mercadoPagoConfig } from "../config/database.config";
-import {
-  RaffleNumber,
-  RaffleNumberStatus,
-} from "../raffles/entities/raffle-number.entity";
-import { RafflePurchase } from "../raffles/entities/raffle-purchase.entity";
+import { RaffleLifecycleService } from "../raffles/raffle-lifecycle.service";
 import { Order, OrderKind, OrderStatus } from "./entities/order.entity";
 import { OrderItem } from "./entities/order-item.entity";
 
@@ -17,12 +13,14 @@ export class OrdersService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly inventory: InventoryService,
+    private readonly raffleLifecycle: RaffleLifecycleService,
   ) {}
 
   @Cron("0 * * * * *")
   async scheduledExpiration(): Promise<void> {
-    if (mercadoPagoConfig().enabled) await this.expireRaffleReservations();
-    else await this.expireReservations();
+    // With MP enabled, PaymentsService reconciles both MERCH and RAFFLE before
+    // releasing. Direct expiry remains the offline-provider policy.
+    if (!mercadoPagoConfig().enabled) await this.expireReservations();
   }
 
   async expireReservations(now = new Date()): Promise<number> {
@@ -69,9 +67,19 @@ export class OrdersService {
         order.reservationExpiresAt > now
       )
         return false;
-      if (order.kind === OrderKind.RAFFLE)
-        await this.releaseRaffleReservation(manager, order);
-      else {
+      if (order.kind === OrderKind.RAFFLE) {
+        const { purchase, numbers } =
+          await this.raffleLifecycle.releaseReservation(manager, order);
+        this.logger.log({
+          step: "raffle_reservation_released",
+          raffleId: purchase.raffleId,
+          rafflePurchaseId: purchase.id,
+          orderId: order.id,
+          numbers: numbers.map((item) => item.number),
+          numberCount: numbers.length,
+          processingResult: "EXPIRED",
+        });
+      } else {
         const items = await manager.findBy(OrderItem, { orderId });
         for (const item of items.sort((a, b) =>
           a.variantId.localeCompare(b.variantId),
@@ -86,57 +94,6 @@ export class OrdersService {
       order.status = OrderStatus.EXPIRED;
       await manager.save(order);
       return true;
-    });
-  }
-
-  private async releaseRaffleReservation(
-    manager: EntityManager,
-    order: Order,
-  ): Promise<void> {
-    const purchase = await manager
-      .getRepository(RafflePurchase)
-      .createQueryBuilder("purchase")
-      .setLock("pessimistic_write")
-      .where("purchase.order_id = :orderId", { orderId: order.id })
-      .getOne();
-    if (!purchase)
-      throw new Error(
-        `Raffle purchase invariant violated for order ${order.id}`,
-      );
-    this.logger.log({
-      step: "raffle_reservation_expiration_started",
-      raffleId: purchase.raffleId,
-      rafflePurchaseId: purchase.id,
-      orderId: order.id,
-    });
-    const numbers = await manager
-      .getRepository(RaffleNumber)
-      .createQueryBuilder("raffleNumber")
-      .setLock("pessimistic_write")
-      .where("raffleNumber.raffle_purchase_id = :purchaseId", {
-        purchaseId: purchase.id,
-      })
-      .orderBy("raffleNumber.number", "ASC")
-      .getMany();
-    const reserved = numbers.filter(
-      (number) => number.status === RaffleNumberStatus.RESERVED,
-    );
-    for (const number of reserved) {
-      number.status = RaffleNumberStatus.AVAILABLE;
-      number.rafflePurchaseId = null;
-      number.reservedAt = null;
-      number.reservedUntil = null;
-      number.soldAt = null;
-    }
-    if (reserved.length) await manager.save(reserved);
-    this.logger.log({
-      step: "raffle_reservation_released",
-      raffleId: purchase.raffleId,
-      rafflePurchaseId: purchase.id,
-      orderId: order.id,
-      numbers: reserved.map((number) => number.number),
-      numberCount: reserved.length,
-      processingResult: "EXPIRED",
     });
   }
 

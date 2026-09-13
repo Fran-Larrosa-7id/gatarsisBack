@@ -452,7 +452,7 @@ describe("public raffle reservations R3 (PostgreSQL)", () => {
     });
   });
 
-  it("the scheduler still releases RAFFLE orders when Mercado Pago is enabled", async () => {
+  it("defers RAFFLE expiry to payment reconciliation when Mercado Pago is enabled", async () => {
     const active = await raffle();
     const response = await reserve(active.id, [42]).expect(201);
     await dataSource.getRepository(Order).update(response.body.orderId, {
@@ -485,15 +485,15 @@ describe("public raffle reservations R3 (PostgreSQL)", () => {
       await dataSource.getRepository(Order).findOneByOrFail({
         id: response.body.orderId,
       }),
-    ).toMatchObject({ status: OrderStatus.EXPIRED });
+    ).toMatchObject({ status: OrderStatus.AWAITING_PAYMENT });
     expect(
       await dataSource.getRepository(RaffleNumber).findOneByOrFail({
         raffleId: active.id,
         number: 42,
       }),
     ).toMatchObject({
-      status: RaffleNumberStatus.AVAILABLE,
-      rafflePurchaseId: null,
+      status: RaffleNumberStatus.RESERVED,
+      rafflePurchaseId: response.body.rafflePurchaseId,
     });
   });
 

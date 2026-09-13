@@ -4,8 +4,14 @@ import { DataSource, In, LessThanOrEqual } from "typeorm";
 import { DomainError } from "../common/domain-error";
 import { mercadoPagoConfig } from "../config/database.config";
 import { InventoryService } from "../inventory/inventory.service";
-import { Order, OrderStatus } from "../orders/entities/order.entity";
+import { Order, OrderKind, OrderStatus } from "../orders/entities/order.entity";
 import { OrderItem } from "../orders/entities/order-item.entity";
+import { RaffleNumber } from "../raffles/entities/raffle-number.entity";
+import { RafflePurchase } from "../raffles/entities/raffle-purchase.entity";
+import {
+  RaffleLifecycleService,
+  RafflePreferenceContext,
+} from "../raffles/raffle-lifecycle.service";
 import { centsToMercadoPagoAmount, mercadoPagoAmountToCents } from "./money";
 import {
   MERCADO_PAGO_GATEWAY,
@@ -41,14 +47,12 @@ export class PaymentsService {
   constructor(
     private readonly dataSource: DataSource,
     private readonly inventory: InventoryService,
+    private readonly raffleLifecycle: RaffleLifecycleService,
     @Inject(MERCADO_PAGO_GATEWAY)
     private readonly gateway: MercadoPagoGatewayContract,
   ) {}
 
-  private trace(
-    step: string,
-    context: Record<string, string | number | boolean | null | undefined>,
-  ) {
+  private trace(step: string, context: Record<string, unknown>) {
     this.logger.log({ step, ...context });
   }
 
@@ -69,20 +73,34 @@ export class PaymentsService {
         undefined,
         503,
       );
+    let raffleContext: RafflePreferenceContext | undefined;
     const prepared = await this.dataSource.transaction(async (manager) => {
       const order = await manager
         .createQueryBuilder(Order, "order")
         .setLock("pessimistic_write")
         .where("order.id = :orderId", { orderId })
         .getOne();
-      if (!order || order.status === OrderStatus.EXPIRED)
+      if (!order)
         throw new DomainError(
           "ORDER_EXPIRED",
           "La orden no está disponible para pago.",
         );
+      if (order.kind === OrderKind.RAFFLE)
+        this.trace("raffle_preference_started", { orderId: order.id });
+      if (order.status === OrderStatus.EXPIRED)
+        throw this.unavailableOrderForPreference(order);
       if (order.status === OrderStatus.PAID)
         throw new DomainError("ORDER_ALREADY_PAID", "La orden ya fue pagada.");
       if (
+        order.kind === OrderKind.RAFFLE &&
+        order.status !== OrderStatus.AWAITING_PAYMENT
+      )
+        throw new DomainError(
+          "PAYMENT_PREFERENCE_NOT_READY",
+          "La reserva de rifa no admite una preference.",
+        );
+      if (
+        order.kind === OrderKind.MERCH &&
         order.status !== OrderStatus.AWAITING_PAYMENT &&
         order.status !== OrderStatus.PAYMENT_PENDING
       )
@@ -91,7 +109,11 @@ export class PaymentsService {
           "La orden no admite una preference.",
         );
       if (order.reservationExpiresAt <= new Date())
-        throw new DomainError("ORDER_EXPIRED", "La reserva ya venció.");
+        throw this.unavailableOrderForPreference(order);
+      raffleContext =
+        order.kind === OrderKind.RAFFLE
+          ? await this.raffleLifecycle.preferenceContext(manager, order)
+          : undefined;
       let preference = await manager
         .createQueryBuilder(PaymentPreference, "preference")
         .setLock("pessimistic_write")
@@ -164,32 +186,78 @@ export class PaymentsService {
       return { order, preference, action: "CREATE" as PreferenceAction };
     });
 
-    if (prepared.action === "READY")
+    if (prepared.action === "READY") {
+      this.traceRafflePreferenceReady(prepared.order, raffleContext);
       return this.preferenceResponse(prepared.order, prepared.preference);
+    }
 
     if (prepared.action === "RECOVER") {
       const recovered = await this.recoverPreference(orderId);
-      if (recovered) return this.preferenceResponse(prepared.order, recovered);
+      if (recovered) {
+        this.traceRafflePreferenceReady(prepared.order, raffleContext);
+        return this.preferenceResponse(prepared.order, recovered);
+      }
       throw this.preferenceCreationPending();
     }
 
-    return this.createRemotePreference(prepared.order);
+    return this.createRemotePreference(prepared.order, raffleContext);
   }
 
-  private async createRemotePreference(order: Order) {
-    const items = await this.dataSource
-      .getRepository(OrderItem)
-      .findBy({ orderId: order.id });
+  async createRafflePreference(rafflePurchaseId: string) {
+    const purchase = await this.dataSource
+      .getRepository(RafflePurchase)
+      .findOneBy({ id: rafflePurchaseId });
+    if (!purchase)
+      throw new DomainError(
+        "RAFFLE_PURCHASE_NOT_FOUND",
+        "La compra de rifa no existe.",
+        undefined,
+        404,
+      );
+    return this.createPreference(purchase.orderId);
+  }
+
+  private async createRemotePreference(
+    order: Order,
+    raffleContext?: RafflePreferenceContext,
+  ) {
+    const items = raffleContext
+      ? [
+          {
+            id: raffleContext.item.id,
+            title: raffleContext.item.title,
+            description: raffleContext.item.description,
+            quantity: raffleContext.item.quantity,
+            unit_price: centsToMercadoPagoAmount(
+              raffleContext.item.unitPriceInCents,
+            ),
+            currency_id: "ARS",
+          },
+        ]
+      : (
+          await this.dataSource
+            .getRepository(OrderItem)
+            .findBy({ orderId: order.id })
+        ).map((item) => ({
+          id: item.skuSnapshot,
+          title: item.productNameSnapshot,
+          quantity: item.quantity,
+          unit_price: centsToMercadoPagoAmount(item.unitPriceInCents),
+        }));
     try {
       const created = await this.gateway.createPreference(
         this.preferencePayload(order, items),
       );
       const preference = await this.readyPreference(order.id, created);
+      this.traceRafflePreferenceReady(order, raffleContext);
       return this.preferenceResponse(order, preference);
     } catch (error) {
       await this.markPreferenceAmbiguous(order.id, "CREATE_AMBIGUOUS");
       const recovered = await this.recoverPreference(order.id);
-      if (recovered) return this.preferenceResponse(order, recovered);
+      if (recovered) {
+        this.traceRafflePreferenceReady(order, raffleContext);
+        return this.preferenceResponse(order, recovered);
+      }
       this.logger.warn({
         step: "payment_preference_creation_ambiguous",
         orderId: order.id,
@@ -200,15 +268,20 @@ export class PaymentsService {
     }
   }
 
-  private preferencePayload(order: Order, items: OrderItem[]) {
+  private preferencePayload(
+    order: Order,
+    items: Array<{
+      id: string;
+      title: string;
+      description?: string;
+      quantity: number;
+      unit_price: number;
+      currency_id?: string;
+    }>,
+  ) {
     const frontendUrl = this.config.frontendUrl;
     return {
-      items: items.map((item) => ({
-        id: item.skuSnapshot,
-        title: item.productNameSnapshot,
-        quantity: item.quantity,
-        unit_price: centsToMercadoPagoAmount(item.unitPriceInCents),
-      })),
+      items,
       external_reference: order.id,
       back_urls: {
         success: `${frontendUrl}/checkout/success`,
@@ -224,6 +297,29 @@ export class PaymentsService {
         ? { payment_methods: { excluded_payment_types: [{ id: "ticket" }] } }
         : {}),
     };
+  }
+
+  private unavailableOrderForPreference(order: Order): DomainError {
+    return order.kind === OrderKind.RAFFLE
+      ? new DomainError(
+          "RAFFLE_RESERVATION_EXPIRED",
+          "La reserva de la rifa ya venció.",
+        )
+      : new DomainError("ORDER_EXPIRED", "La reserva ya venció.");
+  }
+
+  private traceRafflePreferenceReady(
+    order: Order,
+    context?: RafflePreferenceContext,
+  ): void {
+    if (order.kind !== OrderKind.RAFFLE || !context) return;
+    this.trace("raffle_preference_ready", {
+      orderId: order.id,
+      raffleId: context.raffleId,
+      rafflePurchaseId: context.rafflePurchaseId,
+      numberCount: context.item.quantity,
+      processingResult: "READY",
+    });
   }
   private async readyPreference(
     orderId: string,
@@ -407,6 +503,50 @@ export class PaymentsService {
     return {
       orderId: order.id,
       status: order.status.toLowerCase(),
+      reservationExpiresAt: order.reservationExpiresAt,
+      paidAt: order.paidAt,
+    };
+  }
+
+  async rafflePurchaseStatus(rafflePurchaseId: string) {
+    const purchase = await this.dataSource
+      .getRepository(RafflePurchase)
+      .findOneBy({ id: rafflePurchaseId });
+    if (!purchase)
+      throw new DomainError(
+        "RAFFLE_PURCHASE_NOT_FOUND",
+        "La compra de rifa no existe.",
+        undefined,
+        404,
+      );
+    const [order, payment, numbers] = await Promise.all([
+      this.dataSource.getRepository(Order).findOneByOrFail({
+        id: purchase.orderId,
+      }),
+      this.dataSource.getRepository(Payment).findOne({
+        where: { orderId: purchase.orderId },
+        order: { createdAt: "DESC" },
+      }),
+      this.dataSource.getRepository(RaffleNumber).find({
+        where: { rafflePurchaseId: purchase.id },
+        order: { number: "ASC" },
+      }),
+    ]);
+    const status =
+      order.status === OrderStatus.REFUNDED
+        ? "REFUNDED"
+        : payment?.processingStatus === PaymentProcessingStatus.REQUIRES_REVIEW
+          ? "REQUIRES_REVIEW"
+          : order.status === OrderStatus.AWAITING_PAYMENT
+            ? "RESERVED"
+            : order.status === OrderStatus.CANCELLED
+              ? "EXPIRED"
+              : order.status;
+    return {
+      rafflePurchaseId: purchase.id,
+      orderId: order.id,
+      status,
+      numbers: numbers.map((item) => item.number),
       reservationExpiresAt: order.reservationExpiresAt,
       paidAt: order.paidAt,
     };
@@ -779,6 +919,13 @@ export class PaymentsService {
           reviewReason: payment.reviewReason,
           processingResult: "REQUIRES_REVIEW",
         });
+        if (order.kind === OrderKind.RAFFLE && remote.status === "approved")
+          this.logger.warn({
+            step: "raffle_payment_late_approved",
+            providerPaymentId: remote.id,
+            orderId: order.id,
+            processingResult: "LATE_APPROVED_AFTER_RELEASE",
+          });
         return;
       }
       const valid =
@@ -806,25 +953,56 @@ export class PaymentsService {
           });
           return;
         }
-        const items = await manager.findBy(OrderItem, { orderId: order.id });
-        for (const item of items.sort((a, b) =>
-          a.variantId.localeCompare(b.variantId),
-        ))
-          await this.inventory.commitSale(
+        let raffleAppliedLog: Record<string, unknown> | undefined;
+        if (order.kind === OrderKind.RAFFLE) {
+          this.trace("raffle_payment_settlement_started", {
+            orderId: order.id,
+            providerPaymentId: remote.id,
+          });
+          const settlement = await this.raffleLifecycle.commitSale(
             manager,
-            item.variantId,
-            item.quantity,
-            order.id,
+            order,
+            remote.id,
           );
+          if (!settlement.applied) {
+            payment.processingStatus = PaymentProcessingStatus.REQUIRES_REVIEW;
+            payment.reviewReason = settlement.reason;
+            await manager.save(payment);
+            return;
+          }
+          raffleAppliedLog = {
+            orderId: order.id,
+            raffleId: settlement.context.purchase.raffleId,
+            rafflePurchaseId: settlement.context.purchase.id,
+            providerPaymentId: remote.id,
+            numbers: settlement.context.numbers.map((item) => item.number),
+            numberCount: settlement.context.numbers.length,
+            processingResult: "PAID",
+          };
+        } else {
+          const items = await manager.findBy(OrderItem, { orderId: order.id });
+          for (const item of items.sort((a, b) =>
+            a.variantId.localeCompare(b.variantId),
+          ))
+            await this.inventory.commitSale(
+              manager,
+              item.variantId,
+              item.quantity,
+              order.id,
+            );
+        }
         order.status = OrderStatus.PAID;
         order.paidAt = new Date();
         payment.processingStatus = PaymentProcessingStatus.APPLIED;
         await manager.save([order, payment]);
-        this.trace("payment_sale_applied", {
-          providerPaymentId: remote.id,
-          orderId: order.id,
-          processingResult: "PAID",
-        });
+        if (raffleAppliedLog)
+          this.trace("raffle_payment_applied", raffleAppliedLog);
+        else
+          this.trace("payment_sale_applied", {
+            providerPaymentId: remote.id,
+            orderId: order.id,
+            processingResult: "PAID",
+          });
         return;
       }
       if (isProviderPending(remote.status)) {
@@ -836,6 +1014,12 @@ export class PaymentsService {
           orderId: order.id,
           processingResult: "PAYMENT_PENDING",
         });
+        if (order.kind === OrderKind.RAFFLE)
+          this.trace("raffle_payment_pending", {
+            orderId: order.id,
+            providerPaymentId: remote.id,
+            processingResult: "PAYMENT_PENDING",
+          });
         return;
       }
       payment.processingStatus = PaymentProcessingStatus.RECORDED;
@@ -1024,17 +1208,32 @@ export class PaymentsService {
           order.status !== OrderStatus.PAYMENT_PENDING)
       )
         return false;
-      const items = await manager.findBy(OrderItem, { orderId });
-      for (const item of items.sort((a, b) =>
-        a.variantId.localeCompare(b.variantId),
-      ))
-        await this.inventory.releaseReservation(
-          manager,
-          item.variantId,
-          item.quantity,
-          order.id,
-          reason,
-        );
+      if (order.kind === OrderKind.RAFFLE) {
+        const { purchase, numbers } =
+          await this.raffleLifecycle.releaseReservation(manager, order);
+        this.trace("raffle_payment_release", {
+          orderId: order.id,
+          raffleId: purchase.raffleId,
+          rafflePurchaseId: purchase.id,
+          numbers: numbers.map((item) => item.number),
+          numberCount: numbers.length,
+          processingResult: markPendingForReview
+            ? "EXPIRED_REQUIRES_REVIEW"
+            : "EXPIRED_CONFIRMED_UNPAID",
+        });
+      } else {
+        const items = await manager.findBy(OrderItem, { orderId });
+        for (const item of items.sort((a, b) =>
+          a.variantId.localeCompare(b.variantId),
+        ))
+          await this.inventory.releaseReservation(
+            manager,
+            item.variantId,
+            item.quantity,
+            order.id,
+            reason,
+          );
+      }
 
       if (markPendingForReview) {
         const pendingPayments = (
