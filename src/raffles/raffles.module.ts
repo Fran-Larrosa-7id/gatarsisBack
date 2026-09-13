@@ -5,14 +5,21 @@ import { RaffleReservationsController } from "./raffle-reservations.controller";
 import { RaffleReservationsService } from "./raffle-reservations.service";
 import { RaffleLifecycleService } from "./raffle-lifecycle.service";
 import { RafflesService } from "./raffles.service";
+import { PublicRafflesController } from "./public-raffles.controller";
+import { PublicRafflesService } from "./public-raffles.service";
 
 @Module({
   imports: [ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }])],
-  controllers: [AdminRafflesController, RaffleReservationsController],
+  controllers: [
+    AdminRafflesController,
+    PublicRafflesController,
+    RaffleReservationsController,
+  ],
   providers: [
     RafflesService,
     RaffleReservationsService,
     RaffleLifecycleService,
+    PublicRafflesService,
   ],
   exports: [RaffleLifecycleService],
 })
